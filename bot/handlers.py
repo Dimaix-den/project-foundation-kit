@@ -2,6 +2,7 @@
 Обработчики Telegram-сообщений.
 """
 import re
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
@@ -15,6 +16,7 @@ from storage.db import (
     set_brand, get_all_brand,
 )
 
+logger = logging.getLogger(__name__)
 orchestrator = Orchestrator()
 
 # Привязка топиков к агентам (заполняется из config)
@@ -37,6 +39,7 @@ def is_allowed(user_id: int) -> bool:
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Приветствие и инструкция."""
+    logger.info(f"📨 /start от user_id={update.effective_user.id} (@{update.effective_user.username})")
     text = (
         "👋 *Привет! Я — твоя ИИ контент-команда.*\n\n"
         "Просто пиши мне что нужно сделать, я сам разберусь кому передать задачу:\n\n"
@@ -110,14 +113,20 @@ async def cmd_topic_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Главный обработчик всех входящих сообщений."""
+    logger.info(f"📨 Входящее сообщение: update={update.update_id}, chat={update.effective_chat.id}, user={update.effective_user.id}")
+
     if not update.message or not update.message.text:
+        logger.info("⚠️ Нет message или text — пропускаем")
         return
 
     user_id  = update.effective_user.id
     message  = update.message.text.strip()
     topic_id = getattr(update.message, "message_thread_id", 0) or 0
 
+    logger.info(f"📝 Текст: '{message[:80]}' | user_id={user_id} | topic_id={topic_id}")
+
     if not is_allowed(user_id):
+        logger.info(f"🚫 user_id={user_id} не в списке ALLOWED_USER_IDS")
         return
 
     # ─── Команда: показать черновик ──────────────────────────────
