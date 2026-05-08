@@ -1,9 +1,0 @@
-.venv/
-__pycache__/
-*.pyc
-.env
-memory/chroma_db/
-data/outputs/
-.pytest_cache/
-.DS_Store
-*.egg-info/
