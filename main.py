@@ -16,7 +16,7 @@ from telegram.ext import (
 import config
 from storage.db import init_db
 from bot.handlers import (
-    cmd_start, cmd_status, cmd_drafts, cmd_brand, cmd_topic_id,
+    cmd_start, cmd_status, cmd_drafts, cmd_brand, cmd_brand_init, cmd_topic_id,
     cmd_pipeline, handle_message, handle_callback,
 )
 
@@ -71,7 +71,8 @@ def main():
     app.add_handler(CommandHandler("help",     cmd_start))
     app.add_handler(CommandHandler("status",   cmd_status))
     app.add_handler(CommandHandler("drafts",   cmd_drafts))
-    app.add_handler(CommandHandler("brand",    cmd_brand))
+    app.add_handler(CommandHandler("brand",      cmd_brand))
+    app.add_handler(CommandHandler("brand_init", cmd_brand_init))
     app.add_handler(CommandHandler("topic_id", cmd_topic_id))
     app.add_handler(CommandHandler("create",   cmd_pipeline))
 

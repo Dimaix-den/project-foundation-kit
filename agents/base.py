@@ -19,6 +19,38 @@ class BaseAgent:
     def _brand_context(self) -> str:
         """Достаёт брендовые настройки из БД (или дефолтные из config)."""
         brand = get_all_brand()
+
+        # Если в БД есть полный контекст Sanda — используем его
+        if brand.get("name") and brand.get("product_description"):
+            return f"""
+БРЕНД: {brand.get('name', 'Sanda')}
+СЛОГАН: {brand.get('tagline', '')}
+САЙТ: {brand.get('website', '')}
+СТАДИЯ: {brand.get('stage', '')}
+
+ПРОДУКТ:
+{brand.get('product_description', '')}
+
+АУДИТОРИЯ:
+{brand.get('audience', '')}
+
+ПОЗИЦИОНИРОВАНИЕ:
+{brand.get('positioning', '')}
+
+ВИЗУАЛЬНЫЙ СТИЛЬ:
+{brand.get('visual_style', '')}
+
+ТОН И ГОЛОС БРЕНДА:
+{brand.get('tone', '')}
+
+КОНТЕНТ-СТРАТЕГИЯ:
+{brand.get('content_strategy', '')}
+
+ДОПОЛНИТЕЛЬНО:
+{brand.get('extra', '')}
+""".strip()
+
+        # Фолбэк на простые поля
         niche    = brand.get("niche",    BRAND_NICHE)
         tone     = brand.get("tone",     BRAND_TONE)
         language = brand.get("language", BRAND_LANGUAGE)

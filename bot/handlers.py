@@ -181,6 +181,29 @@ async def cmd_drafts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+async def cmd_brand_init(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Инициализирует полный бренд-контекст Sanda в БД."""
+    logger.info(f"📨 /brand_init от user_id={update.effective_user.id}")
+    await update.message.reply_text("⏳ Записываю бренд-контекст Sanda в базу...")
+    try:
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "brand_context.py"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            await update.message.reply_text(
+                "✅ *Бренд-контекст Sanda загружен!*\n\n"
+                "Все агенты теперь знают о продукте, аудитории, тоне и визуальном стиле.\n"
+                "Попробуй: `/create контроль расходов для казахстанцев`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка: {result.stderr[:500]}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
+
 async def cmd_brand(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     brand = get_all_brand()
     if not brand:
