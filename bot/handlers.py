@@ -10,7 +10,7 @@ from telegram.constants import ParseMode
 
 import config
 from agents.orchestrator import Orchestrator
-from agents.pipeline import ContentPipeline
+from agents.curator import CuratorAgent
 from storage.db import (
     add_to_history, get_history,
     get_draft, update_draft_status,
@@ -20,6 +20,7 @@ from storage.db import (
 
 logger = logging.getLogger(__name__)
 orchestrator = Orchestrator()
+curator = CuratorAgent()
 
 # Привязка топиков к агентам (заполняется из config)
 def setup_topic_routing():
@@ -39,98 +40,92 @@ def is_allowed(user_id: int) -> bool:
     return user_id in config.ALLOWED_USER_IDS
 
 
-async def cmd_pipeline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Запускает полный пайплайн: Аналитик → Стратег → Копирайтер → Дизайнер."""
-    logger.info(f"📨 /создать от user_id={update.effective_user.id}")
-
-    topic = " ".join(ctx.args) if ctx.args else ""
-    if not topic:
-        await update.message.reply_text(
-            "📝 Укажи тему после команды:\n`/create делегирование в малом бизнесе`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
+async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Общий хелпер: запускает куратора и отправляет результаты в чат."""
     chat_id   = update.effective_chat.id
     thread_id = getattr(update.message, "message_thread_id", None)
+    loop      = asyncio.get_event_loop()
 
-    # Стартовое сообщение
-    status_msg = await update.message.reply_text(
-        f"🚀 *Запускаю команду над темой:*\n«{topic}»\n\n⏳ Это займёт ~1-2 минуты...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-    # Коллбэк для обновления статуса по мере работы агентов
     async def send_progress(step: str, text: str):
         try:
             await ctx.bot.send_message(
-                chat_id=chat_id,
-                text=text,
+                chat_id=chat_id, text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 message_thread_id=thread_id,
             )
         except Exception as e:
             logger.error(f"Progress send error: {e}")
 
-    # Запускаем пайплайн в отдельном потоке (он синхронный внутри)
-    loop = asyncio.get_event_loop()
-    pipeline = ContentPipeline()
-
     def sync_progress(step, text):
         asyncio.run_coroutine_threadsafe(send_progress(step, text), loop)
 
+    await update.message.reply_text(
+        f"🧠 *Куратор принял задачу:*\n_{task}_\n\n⏳ Составляю план и запускаю команду...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
     try:
         results = await loop.run_in_executor(
-            None, lambda: pipeline.run(topic, progress_cb=sync_progress)
+            None, lambda: curator.run(task, progress_cb=sync_progress)
         )
     except Exception as e:
-        logger.error(f"Pipeline error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ошибка в пайплайне: {e}")
+        logger.error(f"Curator error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
         return
 
-    draft_id = results.get("draft_id")
+    # Отправляем результат каждого шага
+    for step in results.get("steps_results", []):
+        label  = step.get("label", "Результат")
+        result = step.get("result", "")
+        agent  = step.get("agent", "")
+        emojis = {"analyst":"🔍","strategist":"📋","copywriter":"✍️","designer":"🎨","publisher":"📅"}
+        emoji  = emojis.get(agent, "•")
 
-    # Итоговый пост
-    post_text = results.get("copywriter", "")
-    if post_text:
-        chunks = [post_text[i:i+4000] for i in range(0, len(post_text), 4000)]
-        for chunk in chunks:
+        chunks = [result[i:i+3800] for i in range(0, len(result), 3800)]
+        for i, chunk in enumerate(chunks):
+            header = f"{emoji} *{label}:*\n\n" if i == 0 else ""
             try:
                 await ctx.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"✍️ *Готовый текст поста:*\n\n{chunk}",
+                    chat_id=chat_id, text=header + chunk,
                     parse_mode=ParseMode.MARKDOWN,
                     message_thread_id=thread_id,
                 )
             except Exception:
-                await ctx.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
+                await ctx.bot.send_message(
+                    chat_id=chat_id, text=header + chunk,
+                    message_thread_id=thread_id,
+                )
 
-    # Визуальный промпт
-    visual = results.get("designer", "")
-    if visual:
-        try:
-            await ctx.bot.send_message(
-                chat_id=chat_id,
-                text=f"🎨 *Промпт для визуала:*\n\n{visual[:2000]}",
-                parse_mode=ParseMode.MARKDOWN,
-                message_thread_id=thread_id,
-            )
-        except Exception:
-            pass
-
-    # Кнопки одобрения
+    # Кнопки если есть черновик
+    draft_id = results.get("draft_id")
     if draft_id:
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Одобрить и опубликовать", callback_data=f"publish:{draft_id}"),
-            InlineKeyboardButton("✏️ Доработать", callback_data=f"revise:{draft_id}"),
+            InlineKeyboardButton("✅ Опубликовать", callback_data=f"publish:{draft_id}"),
+            InlineKeyboardButton("✏️ Доработать",  callback_data=f"revise:{draft_id}"),
         ]])
         await ctx.bot.send_message(
             chat_id=chat_id,
-            text=f"💾 *Черновик #{draft_id} сохранён*\nЧто делаем с постом?",
+            text=f"💾 *Черновик #{draft_id} сохранён*\nЧто делаем?",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=keyboard,
             message_thread_id=thread_id,
         )
+
+
+async def cmd_pipeline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Команда /create — передаёт задачу куратору."""
+    logger.info(f"📨 /create от user_id={update.effective_user.id}")
+    task = " ".join(ctx.args) if ctx.args else ""
+    if not task:
+        await update.message.reply_text(
+            "📝 Напиши задачу после команды, например:\n"
+            "`/create пост в Threads про финансовые привычки`\n"
+            "`/create контент-план на неделю`\n"
+            "`/create визуал и пост про запуск приложения`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    await _run_curator(task, update, ctx)
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -146,14 +141,19 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📅 *Менеджер* — статус, расписание, публикация\n\n"
         "Или вызывай агента напрямую:\n"
         "`@аналитик`, `@стратег`, `@копирайтер`, `@дизайнер`, `@менеджер`\n\n"
-        "🚀 *Командный режим (вся команда вместе):*\n"
-        "`/create [тема]` — запускает цепочку агентов:\n"
-        "Аналитик → Стратег → Копирайтер → Дизайнер\n\n"
+        "🧠 *Куратор принимает любые задачи:*\n"
+        "`/create [задача]` — примеры:\n"
+        "• `/create пост в Threads про финансы`\n"
+        "• `/create контент-план на неделю`\n"
+        "• `/create визуал и пост про запуск Sanda`\n"
+        "• `/create анализ конкурентов`\n\n"
+        "Или вызывай агента напрямую:\n"
+        "`@аналитик`, `@стратег`, `@копирайтер`, `@дизайнер`, `@менеджер`\n\n"
         "Другие команды:\n"
-        "/status — статус всех материалов\n"
-        "/drafts — список черновиков\n"
-        "/brand — настройки бренда\n"
-        "/help — эта справка"
+        "/status — что в работе\n"
+        "/drafts — черновики\n"
+        "/brand_init — загрузить контекст Sanda\n"
+        "/help — справка"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
