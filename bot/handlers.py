@@ -3,12 +3,14 @@
 """
 import re
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 import config
 from agents.orchestrator import Orchestrator
+from agents.pipeline import ContentPipeline
 from storage.db import (
     add_to_history, get_history,
     get_draft, update_draft_status,
@@ -37,6 +39,100 @@ def is_allowed(user_id: int) -> bool:
     return user_id in config.ALLOWED_USER_IDS
 
 
+async def cmd_pipeline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Запускает полный пайплайн: Аналитик → Стратег → Копирайтер → Дизайнер."""
+    logger.info(f"📨 /создать от user_id={update.effective_user.id}")
+
+    topic = " ".join(ctx.args) if ctx.args else ""
+    if not topic:
+        await update.message.reply_text(
+            "📝 Укажи тему после команды:\n`/создать делегирование в малом бизнесе`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    chat_id   = update.effective_chat.id
+    thread_id = getattr(update.message, "message_thread_id", None)
+
+    # Стартовое сообщение
+    status_msg = await update.message.reply_text(
+        f"🚀 *Запускаю команду над темой:*\n«{topic}»\n\n⏳ Это займёт ~1-2 минуты...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    # Коллбэк для обновления статуса по мере работы агентов
+    async def send_progress(step: str, text: str):
+        try:
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                message_thread_id=thread_id,
+            )
+        except Exception as e:
+            logger.error(f"Progress send error: {e}")
+
+    # Запускаем пайплайн в отдельном потоке (он синхронный внутри)
+    loop = asyncio.get_event_loop()
+    pipeline = ContentPipeline()
+
+    def sync_progress(step, text):
+        asyncio.run_coroutine_threadsafe(send_progress(step, text), loop)
+
+    try:
+        results = await loop.run_in_executor(
+            None, lambda: pipeline.run(topic, progress_cb=sync_progress)
+        )
+    except Exception as e:
+        logger.error(f"Pipeline error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка в пайплайне: {e}")
+        return
+
+    draft_id = results.get("draft_id")
+
+    # Итоговый пост
+    post_text = results.get("copywriter", "")
+    if post_text:
+        chunks = [post_text[i:i+4000] for i in range(0, len(post_text), 4000)]
+        for chunk in chunks:
+            try:
+                await ctx.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✍️ *Готовый текст поста:*\n\n{chunk}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    message_thread_id=thread_id,
+                )
+            except Exception:
+                await ctx.bot.send_message(chat_id=chat_id, text=chunk, message_thread_id=thread_id)
+
+    # Визуальный промпт
+    visual = results.get("designer", "")
+    if visual:
+        try:
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text=f"🎨 *Промпт для визуала:*\n\n{visual[:2000]}",
+                parse_mode=ParseMode.MARKDOWN,
+                message_thread_id=thread_id,
+            )
+        except Exception:
+            pass
+
+    # Кнопки одобрения
+    if draft_id:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Одобрить и опубликовать", callback_data=f"publish:{draft_id}"),
+            InlineKeyboardButton("✏️ Доработать", callback_data=f"revise:{draft_id}"),
+        ]])
+        await ctx.bot.send_message(
+            chat_id=chat_id,
+            text=f"💾 *Черновик #{draft_id} сохранён*\nЧто делаем с постом?",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+            message_thread_id=thread_id,
+        )
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Приветствие и инструкция."""
     logger.info(f"📨 /start от user_id={update.effective_user.id} (@{update.effective_user.username})")
@@ -50,7 +146,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📅 *Менеджер* — статус, расписание, публикация\n\n"
         "Или вызывай агента напрямую:\n"
         "`@аналитик`, `@стратег`, `@копирайтер`, `@дизайнер`, `@менеджер`\n\n"
-        "Команды:\n"
+        "🚀 *Командный режим (вся команда вместе):*\n"
+        "`/создать [тема]` — запускает цепочку агентов:\n"
+        "Аналитик → Стратег → Копирайтер → Дизайнер\n\n"
+        "Другие команды:\n"
         "/status — статус всех материалов\n"
         "/drafts — список черновиков\n"
         "/brand — настройки бренда\n"
