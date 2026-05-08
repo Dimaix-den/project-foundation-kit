@@ -2,6 +2,7 @@
 Точка входа — запускает Telegram-бота.
 """
 import logging
+import traceback
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -9,6 +10,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
+    ContextTypes,
 )
 
 import config
@@ -25,12 +27,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Логирует все необработанные ошибки."""
+    logger.error("❌ Необработанное исключение:", exc_info=context.error)
+    tb = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))
+    logger.error(tb)
+    # Если есть апдейт с сообщением — уведомляем пользователя
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                f"⚠️ Произошла ошибка: {type(context.error).__name__}: {context.error}"
+            )
+        except Exception:
+            pass
+
+
 def main():
     # Проверяем ключи
     if not config.ANTHROPIC_API_KEY:
         raise ValueError("❌ ANTHROPIC_API_KEY не задан в .env")
     if not config.TELEGRAM_BOT_TOKEN:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан в .env")
+
+    logger.info(f"✅ ANTHROPIC_API_KEY: ...{config.ANTHROPIC_API_KEY[-6:]}")
+    logger.info(f"✅ TELEGRAM_BOT_TOKEN: {config.TELEGRAM_BOT_TOKEN[:10]}...")
+    logger.info(f"✅ MODEL: {config.MODEL}")
 
     # Инициализируем БД
     init_db()
@@ -41,6 +62,9 @@ def main():
         .token(config.TELEGRAM_BOT_TOKEN)
         .build()
     )
+
+    # Глобальный обработчик ошибок
+    app.add_error_handler(error_handler)
 
     # Команды
     app.add_handler(CommandHandler("start",    cmd_start))
@@ -57,7 +81,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("🚀 Бот запущен. Ожидаю сообщения...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
