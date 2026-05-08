@@ -46,7 +46,7 @@ async def cmd_pipeline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     topic = " ".join(ctx.args) if ctx.args else ""
     if not topic:
         await update.message.reply_text(
-            "📝 Укажи тему после команды:\n`/создать делегирование в малом бизнесе`",
+            "📝 Укажи тему после команды:\n`/create делегирование в малом бизнесе`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -147,7 +147,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Или вызывай агента напрямую:\n"
         "`@аналитик`, `@стратег`, `@копирайтер`, `@дизайнер`, `@менеджер`\n\n"
         "🚀 *Командный режим (вся команда вместе):*\n"
-        "`/создать [тема]` — запускает цепочку агентов:\n"
+        "`/create [тема]` — запускает цепочку агентов:\n"
         "Аналитик → Стратег → Копирайтер → Дизайнер\n\n"
         "Другие команды:\n"
         "/status — статус всех материалов\n"

@@ -73,7 +73,7 @@ def main():
     app.add_handler(CommandHandler("drafts",   cmd_drafts))
     app.add_handler(CommandHandler("brand",    cmd_brand))
     app.add_handler(CommandHandler("topic_id", cmd_topic_id))
-    app.add_handler(CommandHandler("создать",  cmd_pipeline))
+    app.add_handler(CommandHandler("create",   cmd_pipeline))
 
     # Inline кнопки (одобрение / публикация)
     app.add_handler(CallbackQueryHandler(handle_callback))
