@@ -30,7 +30,19 @@ class Researcher(BaseAgent):
             self.log.warning("Папка не найдена: %s", directory)
             return
         for path in directory.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".pdf", ".docx", ".txt", ".md", ".html"}:
+            if not path.is_file():
+                continue
+            # sources.txt — список URL, по одному в строке
+            if path.name == "sources.txt":
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    url = line.strip()
+                    if url and not url.startswith("#"):
+                        try:
+                            self.ingest_url(url)
+                        except Exception as exc:  # noqa: BLE001
+                            self.log.exception("Не удалось загрузить URL %s: %s", url, exc)
+                continue
+            if path.suffix.lower() in {".pdf", ".docx", ".txt", ".md", ".html"}:
                 try:
                     self.ingest_file(path)
                 except Exception as exc:  # noqa: BLE001
