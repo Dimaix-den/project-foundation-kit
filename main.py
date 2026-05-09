@@ -17,7 +17,7 @@ import config
 from storage.db import init_db
 from bot.handlers import (
     cmd_start, cmd_status, cmd_drafts, cmd_brand, cmd_brand_init, cmd_topic_id,
-    cmd_pipeline, handle_message, handle_callback,
+    cmd_pipeline, cmd_sheets_setup, handle_message, handle_document, handle_callback,
 )
 
 logging.basicConfig(
@@ -74,10 +74,14 @@ def main():
     app.add_handler(CommandHandler("brand",      cmd_brand))
     app.add_handler(CommandHandler("brand_init", cmd_brand_init))
     app.add_handler(CommandHandler("topic_id", cmd_topic_id))
-    app.add_handler(CommandHandler("create",   cmd_pipeline))
+    app.add_handler(CommandHandler("create",       cmd_pipeline))
+    app.add_handler(CommandHandler("sheets_setup", cmd_sheets_setup))
 
     # Inline кнопки (одобрение / публикация)
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Документы (PDF, DOCX, TXT) — аналитик читает и анализирует
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     # Все текстовые сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

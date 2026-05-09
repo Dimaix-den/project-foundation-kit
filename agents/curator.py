@@ -8,6 +8,7 @@
 а планирует многошаговое выполнение с передачей контекста между агентами.
 """
 import json
+import time
 import logging
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL
@@ -94,13 +95,27 @@ class CuratorAgent:
         self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     def _plan(self, task: str) -> dict:
-        """Составляет план выполнения задачи."""
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=PLANNING_SYSTEM,
-            messages=[{"role": "user", "content": f"Задача: {task}"}],
-        )
+        """Составляет план выполнения задачи. Retry при 529."""
+        max_retries = 3
+        retry_delays = [10, 30, 60]
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=1024,
+                    system=PLANNING_SYSTEM,
+                    messages=[{"role": "user", "content": f"Задача: {task}"}],
+                )
+                break
+            except anthropic.APIStatusError as e:
+                if e.status_code == 529 and attempt < max_retries - 1:
+                    wait = retry_delays[attempt]
+                    logger.warning(f"[Curator] API перегружен (529), жду {wait}с...")
+                    time.sleep(wait)
+                else:
+                    raise
+
         raw = response.content[0].text.strip()
         # Убираем markdown если Claude всё же добавил
         if raw.startswith("```"):

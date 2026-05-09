@@ -17,10 +17,25 @@ MODEL = os.getenv("MODEL", "claude-sonnet-4-6")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "content_team.db")
 
 # ─── Brand settings ──────────────────────────────────────────────
-BRAND_NICHE      = os.getenv("BRAND_NICHE",    "B2B бизнес и предпринимательство")
-BRAND_TONE       = os.getenv("BRAND_TONE",     "профессиональный, экспертный, с практической пользой")
-BRAND_LANGUAGE   = os.getenv("BRAND_LANGUAGE", "русский")
-BRAND_AUDIENCE   = os.getenv("BRAND_AUDIENCE", "предприниматели, руководители, B2B-специалисты")
+# Дефолтный контекст Sanda — работает даже без /brand_init и без БД
+BRAND_NICHE    = os.getenv("BRAND_NICHE",    "fintech / личные финансы / Казахстан")
+BRAND_TONE     = os.getenv("BRAND_TONE",     "дружелюбный, прямой, простой — как умный друг который разбирается в деньгах")
+BRAND_LANGUAGE = os.getenv("BRAND_LANGUAGE", "русский (с учётом казахстанской специфики)")
+BRAND_AUDIENCE = os.getenv("BRAND_AUDIENCE", "жители Казахстана 22-35 лет: молодые специалисты, молодые семьи, начинающие предприниматели")
+
+# ─── Sanda brand context (встроенный, не требует /brand_init) ────
+BRAND_NAME = "Sanda"
+BRAND_TAGLINE = "Знай, сколько можешь потратить сегодня"
+BRAND_WEBSITE = "sandawallet.kz / sandawallet.com"
+BRAND_STAGE = "стартап, готовится к запуску в App Store"
+BRAND_PRODUCT = """Sanda — мобильное приложение для личных финансов (iOS/Android).
+Главная идея: в любой момент показывать одну ключевую цифру — «сколько ты можешь потратить сегодня» с учётом всех планов, сбережений и обязательств.
+Ключевые экраны: Сегодня (дашборд), Планы (бюджеты), Капитал (счета, сбережения, кредиты), Статистика.
+Технологии: React + TypeScript + Capacitor + Firebase. Валюта: тенге (₸).
+Аутентификация: Google Sign-In, Apple Sign-In, гостевой режим."""
+BRAND_POSITIONING = """Конкуренты: CoinKeeper, Money Manager, встроенная аналитика Kaspi, Excel.
+Отличие: один экран — одна цифра. Умный дневной бюджет, тёмный минималистичный дизайн,
+геймификация (streak), поддержка казахстанской специфики (Kaspi, рассрочки, тенге)."""
 
 # ─── Telegram Topic IDs ──────────────────────────────────────────
 # После создания суперчата с топиками — вставь ID каждого топика сюда.

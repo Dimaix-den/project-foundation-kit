@@ -3,9 +3,18 @@
 Каждый агент — это Claude с особым системным промптом и набором инструментов.
 """
 from __future__ import annotations
+import time
+import logging
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, BRAND_NICHE, BRAND_TONE, BRAND_LANGUAGE, BRAND_AUDIENCE
+from config import (
+    ANTHROPIC_API_KEY, MODEL,
+    BRAND_NICHE, BRAND_TONE, BRAND_LANGUAGE, BRAND_AUDIENCE,
+    BRAND_NAME, BRAND_TAGLINE, BRAND_WEBSITE, BRAND_STAGE,
+    BRAND_PRODUCT, BRAND_POSITIONING,
+)
 from storage.db import get_all_brand
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAgent:
@@ -50,38 +59,103 @@ class BaseAgent:
 {brand.get('extra', '')}
 """.strip()
 
-        # Фолбэк на простые поля
-        niche    = brand.get("niche",    BRAND_NICHE)
-        tone     = brand.get("tone",     BRAND_TONE)
-        language = brand.get("language", BRAND_LANGUAGE)
-        audience = brand.get("audience", BRAND_AUDIENCE)
-        extra    = brand.get("extra",    "")
-        return (
-            f"Ниша: {niche}\n"
-            f"Тон: {tone}\n"
-            f"Язык: {language}\n"
-            f"Аудитория: {audience}\n"
-            + (f"Доп. инфо о бренде: {extra}" if extra else "")
-        )
+        # Фолбэк — полный встроенный контекст Sanda из config
+        return f"""БРЕНД: {BRAND_NAME}
+СЛОГАН: {BRAND_TAGLINE}
+САЙТ: {BRAND_WEBSITE}
+СТАДИЯ: {BRAND_STAGE}
+
+ПРОДУКТ:
+{BRAND_PRODUCT}
+
+АУДИТОРИЯ:
+{BRAND_AUDIENCE}
+
+ПОЗИЦИОНИРОВАНИЕ:
+{BRAND_POSITIONING}
+
+ТОН И ГОЛОС БРЕНДА:
+{BRAND_TONE}
+
+НИША: {BRAND_NICHE}
+ЯЗЫК: {BRAND_LANGUAGE}""".strip()
+
+    def _telegram_rules(self) -> str:
+        """Правила форматирования для Telegram — применяются ко всем агентам."""
+        return """
+ПРАВИЛА ОБЩЕНИЯ В TELEGRAM (строго обязательно):
+
+1. Пиши как живой человек, не как инструмент. Короткие абзацы, разговорный тон.
+
+2. ЗАПРЕЩЕНО использовать:
+   — Markdown-таблицы (| col | col |) — в Telegram не отображаются
+   — Горизонтальные линии (--- или ===)
+   — HTML-теги
+   — Заголовки с # (# Заголовок) — выглядят как обычный текст со значком
+   — Вложенные списки с отступами
+
+3. РАЗРЕШЕНО:
+   — *жирный* текст для выделения важного
+   — _курсив_ для подзаголовков или акцентов
+   — `код` для терминов, команд, цифр
+   — Списки через дефис (- пункт) или цифры (1. пункт)
+   — Эмодзи для структуры — умеренно
+
+4. Если нужна таблица — замени её структурированным текстом:
+   Вместо таблицы пиши блоками:
+   *Название:* значение
+   *Другое:* значение
+
+5. Если пользователь явно просит таблицу — скажи что создашь её в Google Sheets
+   и сделай это через инструменты (не рисуй таблицу текстом).
+
+6. Длинный ответ — разбивай на абзацы через пустую строку. Не стены текста.
+"""
 
     def _system_prompt(self) -> str:
         raise NotImplementedError
+
+    def _full_system_prompt(self) -> str:
+        """Системный промпт агента + правила Telegram."""
+        return self._system_prompt() + "\n" + self._telegram_rules()
 
     def run(self, user_message: str, history: list[dict] = None) -> str:
         """
         Вызывает агента и возвращает текстовый ответ.
         history — список {'role': 'user'|'assistant', 'content': '...'} из БД.
+        При ошибке 529 (overloaded) — автоматически повторяет до 3 раз.
         """
         messages = []
         if history:
-            for h in history[-8:]:  # последние 8 сообщений контекста
+            for h in history[-8:]:
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": user_message})
 
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
-            system=self._system_prompt(),
-            messages=messages,
-        )
-        return response.content[0].text
+        max_retries = 3
+        retry_delays = [10, 30, 60]
+
+        for attempt in range(max_retries):
+            try:
+                response = self.client.messages.create(
+                    model=MODEL,
+                    max_tokens=2048,
+                    system=self._full_system_prompt(),
+                    messages=messages,
+                )
+                return response.content[0].text
+
+            except anthropic.APIStatusError as e:
+                if e.status_code == 529 and attempt < max_retries - 1:
+                    wait = retry_delays[attempt]
+                    logger.warning(f"[{self.name}] API перегружен (529), жду {wait}с... (попытка {attempt+1}/{max_retries})")
+                    time.sleep(wait)
+                    continue
+                raise
+
+            except anthropic.APIConnectionError as e:
+                if attempt < max_retries - 1:
+                    wait = retry_delays[attempt]
+                    logger.warning(f"[{self.name}] Ошибка соединения, жду {wait}с...")
+                    time.sleep(wait)
+                    continue
+                raise

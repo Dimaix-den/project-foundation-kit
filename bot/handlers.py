@@ -1,6 +1,7 @@
 """
 Обработчики Telegram-сообщений.
 """
+import os
 import re
 import logging
 import asyncio
@@ -11,16 +12,22 @@ from telegram.constants import ParseMode
 import config
 from agents.orchestrator import Orchestrator
 from agents.curator import CuratorAgent
+from agents.analyst import AnalystAgent
 from storage.db import (
     add_to_history, get_history,
     get_draft, update_draft_status,
     save_published, get_drafts,
     set_brand, get_all_brand,
 )
+from storage.sheets import is_sheets_enabled
 
 logger = logging.getLogger(__name__)
 orchestrator = Orchestrator()
 curator = CuratorAgent()
+analyst = AnalystAgent()
+
+DOWNLOADS_DIR = "/tmp/sanda_files"
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 # Привязка топиков к агентам (заполняется из config)
 def setup_topic_routing():
@@ -378,6 +385,68 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Публикация черновика #{draft_id} отменена.")
 
 
+async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработчик файлов: PDF, DOCX, TXT — передаёт аналитику для анализа."""
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
+
+    doc = update.message.document
+    if not doc:
+        return
+
+    # Проверяем формат
+    fname = doc.file_name or ""
+    allowed_exts = (".pdf", ".docx", ".txt")
+    if not any(fname.lower().endswith(ext) for ext in allowed_exts):
+        await update.message.reply_text(
+            "📎 Поддерживаю документы: PDF, DOCX, TXT\n"
+            "Для других форматов — скопируй текст и пришли напрямую."
+        )
+        return
+
+    await update.message.reply_text(f"📥 Получил файл *{fname}*, скачиваю и анализирую...", parse_mode=ParseMode.MARKDOWN)
+    await ctx.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    # Скачиваем файл
+    try:
+        tg_file = await ctx.bot.get_file(doc.file_id)
+        local_path = os.path.join(DOWNLOADS_DIR, fname)
+        await tg_file.download_to_drive(local_path)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось скачать файл: {e}")
+        return
+
+    # Текст задачи из подписи к файлу (caption) или дефолтный
+    caption = (update.message.caption or "").strip()
+    task = caption if caption else f"Проанализируй этот документ и выдели ключевые инсайты для контент-стратегии Sanda."
+
+    # Запускаем аналитика с file_path
+    loop = asyncio.get_event_loop()
+    history = get_history(user_id, limit=4)
+    try:
+        response = await loop.run_in_executor(
+            None, lambda: analyst.run(task, history=history, file_path=local_path)
+        )
+    except Exception as e:
+        logger.error(f"Analyst doc error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка анализа: {e}")
+        return
+
+    add_to_history(user_id, "user", f"[файл: {fname}] {task}", "analyst")
+    add_to_history(user_id, "assistant", response[:1000], "analyst")
+
+    # Отправляем ответ
+    max_len = 4000
+    chunks = [response[i:i+max_len] for i in range(0, len(response), max_len)]
+    for i, chunk in enumerate(chunks):
+        prefix = "🔍 *Аналитик:*\n\n" if i == 0 else ""
+        try:
+            await update.message.reply_text(prefix + chunk, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(prefix + chunk)
+
+
 async def _publish_draft(update: Update, ctx: ContextTypes.DEFAULT_TYPE, draft_id: int):
     """Публикует черновик в канал."""
     draft = get_draft(draft_id)
@@ -406,6 +475,40 @@ async def _publish_draft(update: Update, ctx: ContextTypes.DEFAULT_TYPE, draft_i
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка публикации: {e}")
+
+
+async def cmd_sheets_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Инструкция по подключению Google Sheets."""
+    logger.info(f"📨 /sheets_setup от user_id={update.effective_user.id}")
+
+    if is_sheets_enabled():
+        await update.message.reply_text(
+            "✅ *Google Sheets уже подключён!*\n\n"
+            "Стратег будет записывать контент-план в таблицу автоматически.\n"
+            "Попробуй: `/create контент-план на неделю`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    text = (
+        "📊 *Как подключить Google Sheets (5 минут):*\n\n"
+        "*Шаг 1.* Создай Service Account\n"
+        "→ https://console.cloud.google.com\n"
+        "→ Выбери проект (или создай новый)\n"
+        "→ APIs & Services → Enable APIs → включи *Google Sheets API*\n"
+        "→ IAM & Admin → Service Accounts → Create Service Account\n"
+        "→ Назови его `sanda-content-bot`, нажми Create\n"
+        "→ Keys → Add Key → JSON → скачай файл\n\n"
+        "*Шаг 2.* Создай Google Таблицу\n"
+        "→ Открой новую таблицу на sheets.google.com\n"
+        "→ Скопируй ID из URL: `docs.google.com/spreadsheets/d/`*<<ID здесь>>*`/edit`\n"
+        "→ Нажми «Настроить доступ» → добавь email из скачанного JSON (поле `client_email`) как *редактора*\n\n"
+        "*Шаг 3.* Добавь в Railway Variables:\n"
+        "`GOOGLE_SHEETS_ID` = ID таблицы из URL\n"
+        "`GOOGLE_SERVICE_ACCOUNT_JSON` = *всё содержимое* скачанного JSON-файла\n\n"
+        "После деплоя стратег будет автоматически заполнять таблицу 🎉"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 
 async def _publish_draft_callback(query, ctx: ContextTypes.DEFAULT_TYPE, draft_id: int):
