@@ -58,10 +58,10 @@ class PublisherAgent(BaseAgent):
 
     def get_status_report(self) -> str:
         """Сводка по всем материалам."""
-        drafts  = get_drafts("draft")
-        review  = get_drafts("review")
+        drafts   = get_drafts("draft")
+        review   = get_drafts("review")
         approved = get_drafts("approved")
-        plan    = get_plan("planned")
+        plan     = get_plan("planned")
 
         lines = ["📊 *Статус контент-команды*\n"]
 
@@ -101,9 +101,9 @@ class PublisherAgent(BaseAgent):
         # Запись в Google Sheets (когда куратор передаёт JSON-план)
         if "```json" in user_message:
             result = self._save_plan_to_sheets(user_message)
-            # Показываем только ссылку, без технических деталей
-        if result.startswith("http"):
-            return f"Контент-план записан в таблицу 📊 {result}"
-        return result
+            if result.startswith("http"):
+                return f"Контент-план записан в таблицу 📊 {result}"
+            return result
 
+        # Всё остальное — обычный ответ агента
         return super().run(user_message, history)
