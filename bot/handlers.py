@@ -53,23 +53,11 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
     thread_id = getattr(update.message, "message_thread_id", None)
     loop      = asyncio.get_event_loop()
 
-    async def send_progress(step: str, text: str):
-        try:
-            await ctx.bot.send_message(
-                chat_id=chat_id, text=text,
-                parse_mode=ParseMode.MARKDOWN,
-                message_thread_id=thread_id,
-            )
-        except Exception as e:
-            logger.error(f"Progress send error: {e}")
-
+    # Прогресс только в логах, не в чат
     def sync_progress(step, text):
-        asyncio.run_coroutine_threadsafe(send_progress(step, text), loop)
+        logger.info(f"[Curator progress] {step}: {text}")
 
-    await update.message.reply_text(
-        f"🧠 *Куратор принял задачу:*\n_{task}_\n\n⏳ Составляю план и запускаю команду...",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
         results = await loop.run_in_executor(
@@ -77,29 +65,31 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
         )
     except Exception as e:
         logger.error(f"Curator error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"Что-то пошло не так: {e}")
         return
 
-    # Отправляем результат каждого шага
-    for step in results.get("steps_results", []):
-        label  = step.get("label", "Результат")
-        result = step.get("result", "")
+    # Отправляем только финальные результаты — без технических заголовков шагов
+    steps = results.get("steps_results", [])
+    # Пропускаем промежуточные шаги паблишера если есть финальный результат копирайтера
+    for step in steps:
+        result = step.get("result", "").strip()
         agent  = step.get("agent", "")
-        emojis = {"analyst":"🔍","strategist":"📋","copywriter":"✍️","designer":"🎨","publisher":"📅"}
-        emoji  = emojis.get(agent, "•")
+
+        # Пропускаем пустые и сугубо технические ответы паблишера
+        if not result:
+            continue
 
         chunks = [result[i:i+3800] for i in range(0, len(result), 3800)]
-        for i, chunk in enumerate(chunks):
-            header = f"{emoji} *{label}:*\n\n" if i == 0 else ""
+        for chunk in chunks:
             try:
                 await ctx.bot.send_message(
-                    chat_id=chat_id, text=header + chunk,
+                    chat_id=chat_id, text=chunk,
                     parse_mode=ParseMode.MARKDOWN,
                     message_thread_id=thread_id,
                 )
             except Exception:
                 await ctx.bot.send_message(
-                    chat_id=chat_id, text=header + chunk,
+                    chat_id=chat_id, text=chunk,
                     message_thread_id=thread_id,
                 )
 

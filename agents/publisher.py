@@ -101,6 +101,9 @@ class PublisherAgent(BaseAgent):
         # Запись в Google Sheets (когда куратор передаёт JSON-план)
         if "```json" in user_message:
             result = self._save_plan_to_sheets(user_message)
-            return f"📊 *Паблишер записал план в Google Sheets:*\n{result}"
+            # Показываем только ссылку, без технических деталей
+        if result.startswith("http"):
+            return f"Контент-план записан в таблицу 📊 {result}"
+        return result
 
         return super().run(user_message, history)

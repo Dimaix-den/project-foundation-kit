@@ -12,7 +12,6 @@ from storage.db import save_draft
 from storage.drive import upload_image, is_drive_enabled
 
 logger = logging.getLogger(__name__)
-
 IDEOGRAM_API_URL = "https://api.ideogram.ai/generate"
 
 
@@ -29,123 +28,85 @@ class DesignerAgent(BaseAgent):
 
 ВИЗУАЛЬНЫЙ СТИЛЬ SANDA:
 - Тёмный фон (#000 или тёмно-серый)
-- Акцентный цвет: мятный/зелёный (#3be8b0)
-- Минимализм, glassmorphism карточки
-- Крупные цифры, clean typography
-- Mobile-first, современный fintech UI
+- Акцентный цвет: мятный #3be8b0
+- Минимализм, glassmorphism
+- Реальные люди или абстрактные финансовые метафоры
+- НЕ рисуй интерфейс приложения, экраны с UI, скриншоты
 
-ТВОИ ЗАДАЧИ:
-- Придумывать визуальную концепцию поста
-- Генерировать изображение через Ideogram
-- Загружать на Google Drive и прикреплять ссылку
+ФОРМАТ ОТВЕТА — строго два блока:
 
-ФОРМАТ ОТВЕТА — строго:
+IMAGE_PROMPT: [промпт на английском, одна строка. Lifestyle сцена казахстанца с телефоном, или абстрактная финансовая метафора, или тенге/деньги. Стиль: dark cinematic, mint green accent light, no fake app UI, no text in image]
 
-🎨 Концепция: (что изображено, 1-2 предложения)
+CONCEPT: [2-3 предложения на русском — что изображено и почему это работает для поста]
 
-IMAGE_PROMPT: [промпт на английском, одна строка. НЕ рисуй интерфейс приложения и не придумывай UI. Вместо этого используй: lifestyle сцены казахстанцев с телефоном, абстрактные финансовые метафоры, деньги/купюры тенге, эмоции людей связанные с деньгами. Стиль: dark cinematic background, mint green #3be8b0 accent light, minimalist, real people or abstract concept, NO app screenshots, NO fake UI, NO text in image]
-
-🎭 Стиль: (рекомендации по цвету и настроению)
-
-Отвечай на том же языке, на котором к тебе обращаются."""
+Больше ничего не пиши — только эти два блока."""
 
     def _generate_via_ideogram(self, prompt: str) -> tuple[bytes | None, str]:
-        """Генерирует изображение через Ideogram API."""
         api_key = os.getenv("IDEOGRAM_API_KEY", "")
         if not api_key:
             return None, "IDEOGRAM_API_KEY не задан в Railway Variables"
-
         try:
-            full_prompt = (
-                f"{prompt}, dark background, mint green #3be8b0 accent color, "
-                f"minimalist fintech design, modern mobile app aesthetic, "
-                f"high quality, professional"
-            )
-
+            full_prompt = f"{prompt}, dark background, mint green #3be8b0 accent, minimalist fintech, high quality, professional"
             resp = requests.post(
                 IDEOGRAM_API_URL,
-                headers={
-                    "Api-Key": api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "image_request": {
-                        "prompt": full_prompt,
-                        "aspect_ratio": "ASPECT_1_1",
-                        "model": "V_2",
-                        "magic_prompt_option": "AUTO",
-                    }
-                },
+                headers={"Api-Key": api_key, "Content-Type": "application/json"},
+                json={"image_request": {"prompt": full_prompt, "aspect_ratio": "ASPECT_1_1", "model": "V_2", "magic_prompt_option": "AUTO"}},
                 timeout=60,
             )
             resp.raise_for_status()
-            data = resp.json()
-
-            image_url = data["data"][0]["url"]
-            logger.info(f"[Designer] Ideogram сгенерировал: {image_url[:80]}")
-
-            # Скачиваем байты изображения
+            image_url = resp.json()["data"][0]["url"]
             img_resp = requests.get(image_url, timeout=30)
             img_resp.raise_for_status()
             return img_resp.content, ""
-
         except requests.HTTPError as e:
-            return None, f"Ideogram API ошибка {e.response.status_code}: {e.response.text[:200]}"
-        except KeyError:
-            return None, "Ideogram вернул неожиданный формат ответа"
+            return None, f"Ideogram ошибка {e.response.status_code}"
+        except Exception as e:
+            return None, str(e)
+
+    def _generate_via_pollinations(self, prompt: str) -> tuple[bytes | None, str]:
+        try:
+            full_prompt = f"{prompt}, dark background, mint green accent, minimalist fintech, no text, no UI mockups"
+            encoded = requests.utils.quote(full_prompt)
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true&seed={int(time.time())}"
+            resp = requests.get(url, timeout=60)
+            resp.raise_for_status()
+            if resp.headers.get("content-type", "").startswith("image/"):
+                return resp.content, ""
+            return None, "Не удалось получить изображение"
         except Exception as e:
             return None, str(e)
 
     def run(self, user_message: str, history: list[dict] = None) -> str:
-        # Получаем концепцию и промпт от Claude
-        response = super().run(user_message, history)
+        raw = super().run(user_message, history)
 
-        # Извлекаем IMAGE_PROMPT
-        match = re.search(r"IMAGE_PROMPT:\s*(.+?)(?:\n|$)", response)
-        if not match:
-            return response
+        # Извлекаем промпт и концепцию — пользователю не показываем
+        prompt_match = re.search(r"IMAGE_PROMPT:\s*(.+?)(?:\n|$)", raw)
+        concept_match = re.search(r"CONCEPT:\s*(.+?)(?:\n\n|$)", raw, re.DOTALL)
 
-        image_prompt = match.group(1).strip()
-        logger.info(f"[Designer] Промпт: {image_prompt[:100]}")
+        image_prompt = prompt_match.group(1).strip() if prompt_match else user_message
+        concept = concept_match.group(1).strip() if concept_match else ""
 
-        # Проверяем наличие API ключа
-        if not os.getenv("IDEOGRAM_API_KEY"):
-            response += (
-                "\n\n⚠️ *IDEOGRAM\\_API\\_KEY не задан*\n"
-                "Добавь ключ в Railway Variables → Deploy → и попробуй снова.\n"
-                "Получить ключ: ideogram.ai → Settings → API"
-            )
-            return response
-
-        response += "\n\n⏳ _Генерирую изображение через Ideogram..._"
-
-        image_bytes, err = self._generate_via_ideogram(image_prompt)
+        # Генерируем изображение
+        use_ideogram = bool(os.getenv("IDEOGRAM_API_KEY"))
+        if use_ideogram:
+            image_bytes, err = self._generate_via_ideogram(image_prompt)
+        else:
+            image_bytes, err = self._generate_via_pollinations(image_prompt)
 
         if not image_bytes:
-            response += f"\n⚠️ Ошибка генерации: {err}"
-            return response
+            return f"Не получилось сгенерировать изображение: {err}"
 
-        size_kb = len(image_bytes) // 1024
-        response += f"\n✅ _Изображение готово ({size_kb} KB)_"
-
-        # Загружаем на Google Drive
+        # Загружаем на Drive или даём прямую ссылку
         if is_drive_enabled():
             filename = f"sanda_{int(time.time())}.png"
-            drive_link = upload_image(image_bytes, filename)
-            if drive_link.startswith("http"):
-                response += f"\n📁 [Открыть на Google Drive]({drive_link})"
-                save_draft(
-                    body=response,
-                    title=f"Визуал: {user_message[:50]}",
-                    agent="designer",
-                    visual_prompt=drive_link,
-                )
+            link = upload_image(image_bytes, filename)
+            if link.startswith("http"):
+                result = f"Готово 🎨\n\n{concept}\n\n[Открыть изображение]({link})"
+                save_draft(body=result, title=f"Визуал: {user_message[:50]}", agent="designer", visual_prompt=link)
+                return result
             else:
-                response += f"\n{drive_link}"
+                return f"Изображение создано, но не удалось загрузить на Drive: {link}\n\n{concept}"
         else:
-            response += (
-                "\n💡 _Google Drive не подключён — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway "
-                "чтобы картинки сохранялись автоматически_"
-            )
-
-        return response
+            encoded = requests.utils.quote(image_prompt + ", dark background, mint green accent, minimalist fintech, no text")
+            link = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true"
+            return f"Готово 🎨\n\n{concept}\n\n[Посмотреть изображение]({link})\n\n_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
