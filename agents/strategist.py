@@ -52,24 +52,32 @@ JSON должен содержать ВСЕ посты из плана. Поле
     def run(self, user_message: str, history: list[dict] = None) -> str:
         response = super().run(user_message, history)
 
-        # Автоматически сохраняем контент-план если агент его создал
-        if "```json" in response:
-            try:
-                json_block = response.split("```json")[1].split("```")[0].strip()
-                items = json.loads(json_block)
-                if isinstance(items, list) and items:
-                    # 1. Сохраняем в SQLite
-                    ids = add_plan_items(items)
-                    response += f"\n\n✅ *Сохранено в БД:* {len(ids)} тем"
+        if "```json" not in response:
+            response += "\n\n⚠️ _Стратег не сгенерировал JSON — таблица не обновлена. Попробуй ещё раз._"
+            return response
 
-                    # 2. Экспортируем в Google Sheets (если настроен)
-                    if is_sheets_enabled():
-                        sheets_result = write_content_plan(items)
-                        response += f"\n{sheets_result}"
-                    else:
-                        response += "\n💡 _Подключи Google Sheets — отправь боту /sheets_setup_"
+        try:
+            json_block = response.split("```json")[1].split("```")[0].strip()
+            items = json.loads(json_block)
 
-            except Exception:
-                pass  # Если не удалось распарсить — просто показываем текст
+            if not isinstance(items, list) or not items:
+                response += "\n\n⚠️ _JSON пустой или неверного формата_"
+                return response
+
+            # 1. Сохраняем в SQLite
+            ids = add_plan_items(items)
+            response += f"\n\n✅ *Сохранено в БД:* {len(ids)} тем"
+
+            # 2. Экспортируем в Google Sheets
+            if is_sheets_enabled():
+                sheets_result = write_content_plan(items)
+                response += f"\n{sheets_result}"
+            else:
+                response += "\n💡 _Google Sheets не подключён — напиши /sheets_setup_"
+
+        except json.JSONDecodeError as e:
+            response += f"\n\n⚠️ _Ошибка парсинга JSON: {e}_"
+        except Exception as e:
+            response += f"\n\n⚠️ _Ошибка записи в таблицу: {e}_"
 
         return response
