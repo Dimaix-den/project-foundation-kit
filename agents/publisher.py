@@ -1,7 +1,7 @@
 """
 Агент-менеджер публикаций.
 - Управляет статусами черновиков
-- Записывает контент-планы в Google Sheets
+- Записывает контент-планы в Google Sheets (читает из БД)
 - Публикует одобренный контент
 """
 import json
@@ -37,22 +37,28 @@ class PublisherAgent(BaseAgent):
 
     def _save_plan_to_sheets(self, content: str) -> str:
         """Парсит JSON из текста и записывает в Google Sheets."""
-        if "```json" not in content:
-            return "⚠️ В переданном плане нет JSON-блока — нечего записывать в таблицу."
-
         try:
             json_block = content.split("```json")[1].split("```")[0].strip()
             items = json.loads(json_block)
             if not isinstance(items, list) or not items:
                 return "⚠️ JSON пустой или неверного формата."
-
             if is_sheets_enabled():
                 return write_content_plan(items)
-            else:
-                return "⚠️ Google Sheets не подключён. Напиши /sheets_setup."
-
+            return "⚠️ Google Sheets не подключён. Напиши /sheets_setup."
         except json.JSONDecodeError as e:
             return f"⚠️ Ошибка парсинга JSON: {e}"
+        except Exception as e:
+            return f"⚠️ Ошибка записи в таблицу: {e}"
+
+    def _save_db_plan_to_sheets(self) -> str:
+        """Читает последний план из БД и записывает в Google Sheets."""
+        items = get_plan("planned")
+        if not items:
+            return "⚠️ В базе нет сохранённого контент-плана. Попроси стратега создать его."
+        if not is_sheets_enabled():
+            return "⚠️ Google Sheets не подключён. Напиши /sheets_setup."
+        try:
+            return write_content_plan(items)
         except Exception as e:
             return f"⚠️ Ошибка записи в таблицу: {e}"
 
@@ -64,7 +70,6 @@ class PublisherAgent(BaseAgent):
         plan     = get_plan("planned")
 
         lines = ["📊 *Статус контент-команды*\n"]
-
         if plan:
             lines.append(f"📋 *Контент-план:* {len(plan)} тем")
             for p in plan[:5]:
@@ -73,7 +78,6 @@ class PublisherAgent(BaseAgent):
             if len(plan) > 5:
                 lines.append(f"  _...и ещё {len(plan)-5}_")
         lines.append("")
-
         if drafts:
             lines.append(f"✏️ *Черновики:* {len(drafts)}")
             for d in drafts[:3]:
@@ -86,10 +90,8 @@ class PublisherAgent(BaseAgent):
             lines.append(f"✅ *Одобрено, ждёт публикации:* {len(approved)}")
             for d in approved:
                 lines.append(f"  • [#{d['id']}] {d['title'][:50] or 'без названия'}")
-
         if not any([plan, drafts, review, approved]):
             lines.append("Пока пусто. Попроси стратега создать контент-план.")
-
         return "\n".join(lines)
 
     def run(self, user_message: str, history: list[dict] = None) -> str:
@@ -98,12 +100,17 @@ class PublisherAgent(BaseAgent):
         if any(t in user_message.lower() for t in status_triggers):
             return self.get_status_report()
 
-        # Запись в Google Sheets (когда куратор передаёт JSON-план)
+        # Запись в Google Sheets
+        sheets_triggers = ["google sheets", "таблиц", "запиши", "зафиксируй", "в таблицу", "сохрани в"]
         if "```json" in user_message:
+            # Куратор передал JSON напрямую
             result = self._save_plan_to_sheets(user_message)
-            if result.startswith("http"):
-                return f"Контент-план записан в таблицу 📊 {result}"
-            return result
+        elif any(t in user_message.lower() for t in sheets_triggers):
+            # Читаем из БД (стратег уже сохранил туда)
+            result = self._save_db_plan_to_sheets()
+        else:
+            return super().run(user_message, history)
 
-        # Всё остальное — обычный ответ агента
-        return super().run(user_message, history)
+        if result.startswith("http"):
+            return f"Контент-план записан в таблицу 📊 {result}"
+        return result

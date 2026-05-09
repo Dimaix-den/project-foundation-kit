@@ -29,74 +29,108 @@ class DesignerAgent(BaseAgent):
 ВИЗУАЛЬНЫЙ СТИЛЬ SANDA:
 - Тёмный фон (#000 или тёмно-серый)
 - Акцентный цвет: мятный #3be8b0
-- Минимализм, glassmorphism
-- Реальные люди или абстрактные финансовые метафоры
-- НЕ рисуй интерфейс приложения, экраны с UI, скриншоты
+- Минимализм, lifestyle-фотография
+- Реальные люди (казахстанцы с телефоном, кошельком, в кафе/дома) или абстрактные финансовые метафоры
+- НЕ рисуй интерфейс приложения, экраны с UI, скриншоты, фейковые мобильные интерфейсы
 
-ФОРМАТ ОТВЕТА — строго два блока:
+ТВОЙ ОТВЕТ — строго два блока, ничего лишнего:
 
-IMAGE_PROMPT: [промпт на английском, одна строка. Lifestyle сцена казахстанца с телефоном, или абстрактная финансовая метафора, или тенге/деньги. Стиль: dark cinematic, mint green accent light, no fake app UI, no text in image]
+IMAGE_PROMPT: [промпт на английском, одна строка. Конкретная lifestyle-сцена или абстрактная метафора. Пример: "Young Kazakh woman in cozy apartment checking finances on phone, dark moody lighting, mint green accent, cinematic, no UI mockups"]
 
 CONCEPT: [2-3 предложения на русском — что изображено и почему это работает для поста]
 
-Больше ничего не пиши — только эти два блока."""
+Только эти два блока. Больше ничего."""
 
-    def _generate_via_ideogram(self, prompt: str) -> tuple[bytes | None, str]:
+    def _generate_via_ideogram(self, prompt: str) -> tuple:
         api_key = os.getenv("IDEOGRAM_API_KEY", "")
         if not api_key:
-            return None, "IDEOGRAM_API_KEY не задан в Railway Variables"
+            return None, "IDEOGRAM_API_KEY не задан"
         try:
-            full_prompt = f"{prompt}, dark background, mint green #3be8b0 accent, minimalist fintech, high quality, professional"
+            full_prompt = (
+                f"{prompt}, dark background, mint green #3be8b0 accent light, "
+                "minimalist fintech aesthetic, high quality, cinematic lighting, "
+                "no fake phone UI, no text overlays"
+            )
             resp = requests.post(
                 IDEOGRAM_API_URL,
                 headers={"Api-Key": api_key, "Content-Type": "application/json"},
-                json={"image_request": {"prompt": full_prompt, "aspect_ratio": "ASPECT_1_1", "model": "V_2", "magic_prompt_option": "AUTO"}},
-                timeout=60,
+                json={
+                    "image_request": {
+                        "prompt": full_prompt,
+                        "aspect_ratio": "ASPECT_1_1",
+                        "model": "V_2",
+                        "magic_prompt_option": "AUTO",
+                    }
+                },
+                timeout=90,
             )
             resp.raise_for_status()
-            image_url = resp.json()["data"][0]["url"]
-            img_resp = requests.get(image_url, timeout=30)
+            data = resp.json()
+            image_url = data["data"][0]["url"]
+            img_resp = requests.get(image_url, timeout=60)
             img_resp.raise_for_status()
             return img_resp.content, ""
         except requests.HTTPError as e:
-            return None, f"Ideogram ошибка {e.response.status_code}"
+            return None, f"Ideogram ошибка {e.response.status_code}: {e.response.text[:200]}"
         except Exception as e:
             return None, str(e)
 
-    def _generate_via_pollinations(self, prompt: str) -> tuple[bytes | None, str]:
+    def _generate_via_pollinations(self, prompt: str) -> tuple:
+        """Fallback: Pollinations.ai — только английский промпт."""
         try:
-            full_prompt = f"{prompt}, dark background, mint green accent, minimalist fintech, no text, no UI mockups"
+            # Убеждаемся что промпт на английском (если нет — используем дефолтный)
+            has_cyrillic = bool(re.search(r'[а-яА-Я]', prompt))
+            if has_cyrillic:
+                prompt = "Young person managing finances on smartphone, dark moody background, mint green light accent, cinematic lifestyle"
+
+            full_prompt = f"{prompt}, dark background, mint green accent, minimalist, high quality, no UI mockups, no text"
             encoded = requests.utils.quote(full_prompt)
             url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true&seed={int(time.time())}"
-            resp = requests.get(url, timeout=60)
+            resp = requests.get(url, timeout=90, stream=True)
             resp.raise_for_status()
-            if resp.headers.get("content-type", "").startswith("image/"):
+            if "image" in resp.headers.get("content-type", ""):
                 return resp.content, ""
-            return None, "Не удалось получить изображение"
+            return None, f"Неожиданный content-type: {resp.headers.get('content-type')}"
         except Exception as e:
             return None, str(e)
 
     def run(self, user_message: str, history: list[dict] = None) -> str:
+        # Получаем от Claude промпт и концепцию
         raw = super().run(user_message, history)
 
-        # Извлекаем промпт и концепцию — пользователю не показываем
-        prompt_match = re.search(r"IMAGE_PROMPT:\s*(.+?)(?:\n|$)", raw)
-        concept_match = re.search(r"CONCEPT:\s*(.+?)(?:\n\n|$)", raw, re.DOTALL)
+        # Извлекаем IMAGE_PROMPT (поддерживаем разные форматы)
+        prompt_match = re.search(r"\*{0,2}IMAGE_PROMPT\*{0,2}:\s*(.+?)(?:\n|$)", raw, re.IGNORECASE)
+        concept_match = re.search(r"\*{0,2}CONCEPT\*{0,2}:\s*(.+?)(?:\n\n|\Z)", raw, re.IGNORECASE | re.DOTALL)
 
-        image_prompt = prompt_match.group(1).strip() if prompt_match else user_message
+        image_prompt = prompt_match.group(1).strip() if prompt_match else ""
         concept = concept_match.group(1).strip() if concept_match else ""
 
-        # Генерируем изображение
+        # Если Claude не дал English промпт — используем дефолтный
+        if not image_prompt or re.search(r'[а-яА-Я]', image_prompt):
+            logger.warning(f"[Designer] IMAGE_PROMPT не найден или кириллица, использую дефолтный. raw={raw[:200]}")
+            image_prompt = "Young Kazakh person managing personal finances on smartphone, cozy home setting, dark cinematic lighting, mint green accent, lifestyle photography"
+
+        # Генерируем
         use_ideogram = bool(os.getenv("IDEOGRAM_API_KEY"))
         if use_ideogram:
             image_bytes, err = self._generate_via_ideogram(image_prompt)
+            if not image_bytes:
+                logger.warning(f"[Designer] Ideogram failed: {err}, пробую Pollinations")
+                image_bytes, err = self._generate_via_pollinations(image_prompt)
         else:
             image_bytes, err = self._generate_via_pollinations(image_prompt)
 
         if not image_bytes:
-            return f"Не получилось сгенерировать изображение: {err}"
+            # Возвращаем хотя бы концепцию и статичную ссылку
+            encoded = requests.utils.quote(image_prompt + ", dark background, mint green accent, minimalist fintech, no text")
+            link = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true"
+            return (
+                f"Готово 🎨\n\n{concept}\n\n"
+                f"[Посмотреть изображение]({link})\n\n"
+                f"_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
+            )
 
-        # Загружаем на Drive или даём прямую ссылку
+        # Загружаем на Drive
         if is_drive_enabled():
             filename = f"sanda_{int(time.time())}.png"
             link = upload_image(image_bytes, filename)
@@ -104,9 +138,12 @@ CONCEPT: [2-3 предложения на русском — что изобра
                 result = f"Готово 🎨\n\n{concept}\n\n[Открыть изображение]({link})"
                 save_draft(body=result, title=f"Визуал: {user_message[:50]}", agent="designer", visual_prompt=link)
                 return result
-            else:
-                return f"Изображение создано, но не удалось загрузить на Drive: {link}\n\n{concept}"
+            return f"Изображение создано, но Drive недоступен: {link}\n\n{concept}"
         else:
             encoded = requests.utils.quote(image_prompt + ", dark background, mint green accent, minimalist fintech, no text")
             link = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true"
-            return f"Готово 🎨\n\n{concept}\n\n[Посмотреть изображение]({link})\n\n_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
+            return (
+                f"Готово 🎨\n\n{concept}\n\n"
+                f"[Посмотреть изображение]({link})\n\n"
+                f"_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
+            )
