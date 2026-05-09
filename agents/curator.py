@@ -168,7 +168,7 @@ class CuratorAgent:
     def run(self, task: str, progress_cb=None) -> dict:
         logger.info(f"[Curator] Задача: {task[:80]}")
         if progress_cb:
-            progress_cb("plan", "🧠 Куратор составляет план...")
+            progress_cb("plan", "🧠 *Куратор* анализирует задачу и составляет план...")
 
         # Подгружаем план из БД если задача о нём
         enriched_task = self._enrich_task_with_plan(task)
@@ -213,7 +213,14 @@ class CuratorAgent:
             logger.info(f"[Curator] Шаг {i+1}/{len(plan['steps'])}: {agent_name} → {instruction[:60]}")
 
             if progress_cb:
-                progress_cb(agent_name, f"{emoji} {agent_name.capitalize()} работает...")
+                step_msgs = {
+                    "analyst":    f"🔍 *Аналитик* изучает тему: _{output_label}_...",
+                    "strategist": f"📋 *Стратег* составляет: _{output_label}_...",
+                    "copywriter": f"✍️ *Копирайтер* пишет: _{output_label}_...",
+                    "designer":   f"🎨 *Дизайнер* создаёт: _{output_label}_...",
+                    "publisher":  f"📅 *Менеджер* сохраняет: _{output_label}_...",
+                }
+                progress_cb(agent_name, step_msgs.get(agent_name, f"{emoji} *{agent_name}* работает..."))
 
             full_instruction = instruction
             if use_previous and accumulated_context:

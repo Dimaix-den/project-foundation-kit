@@ -48,14 +48,23 @@ def is_allowed(user_id: int) -> bool:
 
 
 async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Общий хелпер: запускает куратора и отправляет результаты в чат."""
+    """Общий хелпер: запускает куратора, показывает прогресс и отправляет результаты."""
     chat_id   = update.effective_chat.id
     thread_id = getattr(update.message, "message_thread_id", None)
     loop      = asyncio.get_event_loop()
 
-    # Прогресс только в логах, не в чат
+    # Прогресс — отправляем в чат
     def sync_progress(step, text):
         logger.info(f"[Curator progress] {step}: {text}")
+        asyncio.run_coroutine_threadsafe(
+            ctx.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="Markdown",
+                message_thread_id=thread_id,
+            ),
+            loop,
+        )
 
     await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
 
