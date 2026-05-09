@@ -218,8 +218,7 @@ class CuratorAgent:
             full_instruction = instruction
             if use_previous and accumulated_context:
                 full_instruction = (
-                    f"{instruction}\n\n"
-                    f"---\nКОНТЕКСТ:\n{accumulated_context}"
+                    f"{instruction}\n\nКОНТЕКСТ:\n{accumulated_context}"
                 )
 
             agent = AGENTS[agent_name]
@@ -238,7 +237,9 @@ class CuratorAgent:
                 "result": result,
             })
 
-            accumulated_context += f"\n\n[{output_label}]:\n{result[:800]}"
+            # Паблишер получает полный текст (нужен для записи всех постов в Sheets)
+            ctx_slice = result if agent_name == "publisher" else result[:3000]
+            accumulated_context += f"\n\n[{output_label}]:\n{ctx_slice}"
             logger.info(f"[Curator] Шаг {i+1} готов: {result[:80]}...")
 
         # Сохраняем черновик от копирайтера
