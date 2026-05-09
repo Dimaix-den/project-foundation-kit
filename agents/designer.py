@@ -43,7 +43,7 @@ class DesignerAgent(BaseAgent):
 
 🎨 Концепция: (что изображено, 1-2 предложения)
 
-IMAGE_PROMPT: [промпт на английском, одна строка, детальный. Всегда включай: dark background, mint green #3be8b0 accent, minimalist fintech style, Kazakhstan, no text]
+IMAGE_PROMPT: [промпт на английском, одна строка. НЕ рисуй интерфейс приложения и не придумывай UI. Вместо этого используй: lifestyle сцены казахстанцев с телефоном, абстрактные финансовые метафоры, деньги/купюры тенге, эмоции людей связанные с деньгами. Стиль: dark cinematic background, mint green #3be8b0 accent light, minimalist, real people or abstract concept, NO app screenshots, NO fake UI, NO text in image]
 
 🎭 Стиль: (рекомендации по цвету и настроению)
 
