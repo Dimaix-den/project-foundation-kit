@@ -17,7 +17,7 @@ import config
 from storage.db import init_db
 from bot.handlers import (
     cmd_start, cmd_status, cmd_drafts, cmd_brand, cmd_brand_init, cmd_topic_id,
-    cmd_pipeline, cmd_sheets_setup, handle_message, handle_document, handle_callback,
+    cmd_pipeline, cmd_sheets_setup, cmd_sheets_test, handle_message, handle_document, handle_callback,
 )
 
 logging.basicConfig(
@@ -76,6 +76,7 @@ def main():
     app.add_handler(CommandHandler("topic_id", cmd_topic_id))
     app.add_handler(CommandHandler("create",       cmd_pipeline))
     app.add_handler(CommandHandler("sheets_setup", cmd_sheets_setup))
+    app.add_handler(CommandHandler("sheets_test",  cmd_sheets_test))
 
     # Inline кнопки (одобрение / публикация)
     app.add_handler(CallbackQueryHandler(handle_callback))

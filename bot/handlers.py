@@ -511,6 +511,71 @@ async def cmd_sheets_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 
+async def cmd_sheets_test(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Диагностика подключения к Google Sheets."""
+    import os, json as _json
+    lines = ["🔍 *Диагностика Google Sheets:*\n"]
+
+    # 1. Проверяем переменные
+    sheets_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    sa_json   = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+
+    lines.append(f"GOOGLE_SHEETS_ID: {'✅ ' + sheets_id[:20] + '...' if sheets_id else '❌ не задан'}")
+    lines.append(f"GOOGLE_SERVICE_ACCOUNT_JSON: {'✅ задан (' + str(len(sa_json)) + ' символов)' if sa_json else '❌ не задан'}")
+
+    if not sheets_id or not sa_json:
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # 2. Парсим JSON
+    try:
+        sa_info = _json.loads(sa_json)
+        lines.append(f"JSON парсинг: ✅ (client_email: {sa_info.get('client_email', '?')})")
+    except Exception as e:
+        lines.append(f"JSON парсинг: ❌ {e}")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # 3. Авторизация
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        gc = gspread.authorize(creds)
+        lines.append("Авторизация Google: ✅")
+    except Exception as e:
+        lines.append(f"Авторизация Google: ❌ {e}")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # 4. Открываем таблицу
+    try:
+        spreadsheet = gc.open_by_key(sheets_id)
+        lines.append(f"Открытие таблицы: ✅ '{spreadsheet.title}'")
+    except Exception as e:
+        lines.append(f"Открытие таблицы: ❌ {e}")
+        lines.append(f"\n💡 Убедись что добавил {sa_info.get('client_email')} как редактора в таблицу")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # 5. Тестовая запись
+    try:
+        from storage.sheets import write_content_plan
+        result = write_content_plan([{
+            "topic": "Тест подключения",
+            "description": "Проверка работы Google Sheets интеграции",
+            "platform": "telegram",
+            "scheduled": "2026-05-10",
+        }])
+        lines.append(f"Тестовая запись: ✅")
+        lines.append(f"\n{result}")
+    except Exception as e:
+        lines.append(f"Тестовая запись: ❌ {e}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+
+
 async def _publish_draft_callback(query, ctx: ContextTypes.DEFAULT_TYPE, draft_id: int):
     """Публикует через callback-кнопку."""
     draft = get_draft(draft_id)
