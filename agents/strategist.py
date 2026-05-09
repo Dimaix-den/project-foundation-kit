@@ -47,7 +47,7 @@ class StrategistAgent(BaseAgent):
 ]
 ```
 
-JSON должен содержать ВСЕ посты из плана. Поле scheduled — реальная дата в формате YYYY-MM-DD."""
+JSON должен содержать ВСЕ посты из плана. Поле scheduled — реальная дата YYYY-MM-DD. ВАЖНО: description не длиннее 100 символов — только суть."""
 
     def run(self, user_message: str, history: list[dict] = None) -> str:
         response = super().run(user_message, history)

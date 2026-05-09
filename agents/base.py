@@ -138,7 +138,7 @@ class BaseAgent:
             try:
                 response = self.client.messages.create(
                     model=MODEL,
-                    max_tokens=2048,
+                    max_tokens=4096,
                     system=self._full_system_prompt(),
                     messages=messages,
                 )
