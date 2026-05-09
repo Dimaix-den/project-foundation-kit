@@ -80,18 +80,20 @@ PLANNING_SYSTEM = f"""Ты — куратор контент-команды. Т�
   "task_summary": "Создать контент-план на неделю",
   "steps": [
     {{"agent": "analyst", "instruction": "Найди 3-5 актуальных тренда и болей аудитории по теме личных финансов в Казахстане. Коротко.", "use_previous": false, "output_label": "Тренды и инсайты"}},
-    {{"agent": "strategist", "instruction": "Создай контент-план на 7 дней (пн-вс) с темами постов. Используй данные аналитика. Для каждого дня: тема, формат, цель.", "use_previous": true, "output_label": "Контент-план"}}
+    {{"agent": "strategist", "instruction": "Создай контент-план на 7 дней (пн-вс) с темами постов. Используй данные аналитика. Для каждого дня: тема, формат, цель.", "use_previous": true, "output_label": "Контент-план"}},
+    {{"agent": "publisher", "instruction": "Запиши готовый контент-план в Google Sheets.", "use_previous": true, "output_label": "Сохранено в таблицу"}}
   ],
-  "final_format": "Контент-план на неделю с темами и форматами"
+  "final_format": "Контент-план на неделю + записан в Google Sheets"
 }}
 
 Задача: "зафиксируй контент-план в таблице" / "запиши план в sheets" / "сохрани план"
 {{
   "task_summary": "Создать контент-план и записать в Google Sheets",
   "steps": [
-    {{"agent": "strategist", "instruction": "Создай контент-план на ближайшие 7 дней с конкретными темами для Sanda. Обязательно выведи JSON-блок в конце — он автоматически запишется в Google Sheets.", "use_previous": false, "output_label": "Контент-план в таблице"}}
+    {{"agent": "strategist", "instruction": "Создай контент-план на ближайшие 7 дней с конкретными темами для Sanda.", "use_previous": false, "output_label": "Контент-план"}},
+    {{"agent": "publisher", "instruction": "Запиши готовый контент-план в Google Sheets.", "use_previous": true, "output_label": "Сохранено в таблицу"}}
   ],
-  "final_format": "Контент-план записан в Google Sheets"
+  "final_format": "Контент-план записан в Google Sheets паблишером"
 }}"""
 
 
