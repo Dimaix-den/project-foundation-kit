@@ -1,44 +1,29 @@
 """
 Утилита для работы с Google Sheets.
-
-Использует Service Account — никаких OAuth-окон, работает на сервере (Railway).
-
-Настройка (один раз):
-1. Зайди в https://console.cloud.google.com
-2. Создай проект → включи Google Sheets API
-3. IAM → Service Accounts → Create → скачай JSON-ключ
-4. Скопируй всё содержимое JSON-ключа в переменную окружения GOOGLE_SERVICE_ACCOUNT_JSON
-5. Создай Google Sheet, добавь в него email сервис-аккаунта (поле client_email) как редактора
-6. Скопируй ID таблицы из URL (https://docs.google.com/spreadsheets/d/<<SPREADSHEET_ID>>/edit)
-7. Добавь GOOGLE_SHEETS_ID в переменные Railway
+Service Account — без OAuth, работает на Railway.
 """
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Ленивая инициализация клиента ─────────────────────────────────────────────
 _gc = None
 
 
 def _get_client():
-    """Возвращает авторизованный gspread клиент (создаётся один раз)."""
     global _gc
     if _gc is not None:
         return _gc
-
     try:
         import gspread
         from google.oauth2.service_account import Credentials
-
         sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
         if not sa_json:
-            logger.warning("[Sheets] GOOGLE_SERVICE_ACCOUNT_JSON не задан — Google Sheets отключён")
             return None
-
         sa_info = json.loads(sa_json)
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -46,83 +31,66 @@ def _get_client():
         ]
         creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
         _gc = gspread.authorize(creds)
-        logger.info("[Sheets] Авторизация Google Sheets успешна")
         return _gc
-
     except Exception as e:
         logger.error(f"[Sheets] Ошибка авторизации: {e}")
         return None
 
 
 def _get_sheet(spreadsheet_id: str, worksheet_title: str = "Контент-план"):
-    """Открывает (или создаёт) нужный лист в таблице."""
     gc = _get_client()
     if not gc:
         return None
-
     try:
         spreadsheet = gc.open_by_key(spreadsheet_id)
     except Exception as e:
-        logger.error(f"[Sheets] Не удалось открыть таблицу {spreadsheet_id}: {e}")
+        logger.error(f"[Sheets] Не удалось открыть таблицу: {e}")
         return None
-
-    # Ищем лист с нужным именем
     try:
         ws = spreadsheet.worksheet(worksheet_title)
     except Exception:
-        # Создаём новый лист
         try:
-            ws = spreadsheet.add_worksheet(title=worksheet_title, rows=500, cols=10)
-            logger.info(f"[Sheets] Создан лист '{worksheet_title}'")
+            ws = spreadsheet.add_worksheet(title=worksheet_title, rows=500, cols=12)
         except Exception as e:
             logger.error(f"[Sheets] Не удалось создать лист: {e}")
             return None
-
     return ws
 
 
-# ── Публичные функции ──────────────────────────────────────────────────────────
+# Заголовки таблицы (с колонкой текста)
+HEADERS = ["#", "Тема", "Описание", "Платформа", "Дата", "Статус", "Текст к посту", "Добавлено"]
+
 
 def write_content_plan(items: list[dict], spreadsheet_id: Optional[str] = None) -> str:
     """
-    Записывает контент-план в Google Sheets.
-
-    items — список словарей: [{topic, description, platform, scheduled}, ...]
-    spreadsheet_id — ID таблицы (если None, берём из env GOOGLE_SHEETS_ID)
-
-    Возвращает URL листа или сообщение об ошибке.
+    Записывает контент-план в Google Sheets (с пустой колонкой 'Текст к посту').
+    items — [{topic, description, platform, scheduled, body(optional)}, ...]
     """
     if not spreadsheet_id:
         spreadsheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
     if not spreadsheet_id:
-        return "⚠️ GOOGLE_SHEETS_ID не задан — таблица не обновлена"
+        return "⚠️ GOOGLE_SHEETS_ID не задан"
 
     ws = _get_sheet(spreadsheet_id)
     if not ws:
         return "⚠️ Не удалось подключиться к Google Sheets"
 
     try:
-        # Заголовки (только если лист пустой)
         existing = ws.get_all_values()
-        header = ["#", "Тема", "Описание", "Платформа", "Дата", "Статус", "Добавлено"]
-
-        if not existing or existing[0] != header:
+        if not existing or existing[0] != HEADERS:
             ws.clear()
-            ws.append_row(header)
-            # Форматируем заголовок жирным
+            ws.append_row(HEADERS)
             try:
-                ws.format("A1:G1", {
+                ws.format(f"A1:{chr(64+len(HEADERS))}1", {
                     "textFormat": {"bold": True},
-                    "backgroundColor": {"red": 0.0, "green": 0.53, "blue": 0.44},  # #00876f
+                    "backgroundColor": {"red": 0.0, "green": 0.53, "blue": 0.44},
                 })
             except Exception:
                 pass
 
-        # Находим следующий номер строки
         all_rows = ws.get_all_values()
-        next_num = max(1, len(all_rows))  # строк уже есть (включая заголовок)
+        next_num = max(1, len(all_rows))
 
-        # Добавляем строки
         now = datetime.now().strftime("%d.%m.%Y %H:%M")
         rows_to_add = []
         for i, item in enumerate(items):
@@ -133,23 +101,70 @@ def write_content_plan(items: list[dict], spreadsheet_id: Optional[str] = None) 
                 item.get("platform", "telegram"),
                 item.get("scheduled", ""),
                 "📝 Черновик",
+                item.get("body", ""),   # Текст к посту (пусто если не передан)
                 now,
             ])
 
         ws.append_rows(rows_to_add, value_input_option="USER_ENTERED")
-        logger.info(f"[Sheets] Добавлено {len(rows_to_add)} строк в таблицу")
+        logger.info(f"[Sheets] Добавлено {len(rows_to_add)} строк")
 
-        # Возвращаем ссылку
         sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
-        return f"📊 [Открыть таблицу]({sheet_url}) — добавлено {len(rows_to_add)} тем"
+        return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
 
     except Exception as e:
         logger.error(f"[Sheets] Ошибка записи: {e}")
         return f"⚠️ Ошибка записи в таблицу: {e}"
 
 
+def write_texts_to_plan(texts: list[str], spreadsheet_id: Optional[str] = None) -> str:
+    """
+    Записывает тексты постов в колонку 'Текст к посту'.
+    texts — список текстов в том же порядке что и строки в таблице (начиная со строки 2).
+    """
+    if not spreadsheet_id:
+        spreadsheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    if not spreadsheet_id:
+        return "⚠️ GOOGLE_SHEETS_ID не задан"
+
+    ws = _get_sheet(spreadsheet_id)
+    if not ws:
+        return "⚠️ Не удалось подключиться к Google Sheets"
+
+    try:
+        all_values = ws.get_all_values()
+        if not all_values:
+            return "⚠️ Таблица пуста — сначала создай контент-план"
+
+        # Находим индекс колонки "Текст к посту"
+        header = all_values[0]
+        try:
+            text_col_idx = header.index("Текст к посту")
+        except ValueError:
+            # Колонки нет — добавляем
+            text_col_idx = len(header)
+            # Обновляем заголовок
+            ws.update_cell(1, text_col_idx + 1, "Текст к посту")
+
+        # Обновляем строки с текстами (строка 2 = индекс 1)
+        data_rows = all_values[1:]  # без заголовка
+        updated = 0
+        for i, text in enumerate(texts):
+            if i >= len(data_rows):
+                break
+            row_num = i + 2  # в Sheets строки с 1, плюс заголовок
+            col_num = text_col_idx + 1
+            ws.update_cell(row_num, col_num, text)
+            updated += 1
+
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit|{updated}"
+
+    except Exception as e:
+        logger.error(f"[Sheets] Ошибка записи текстов: {e}")
+        return f"⚠️ Ошибка: {e}"
+
+
 def is_sheets_enabled() -> bool:
-    """Проверяет, настроена ли интеграция с Google Sheets."""
     return bool(
         os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
         and os.getenv("GOOGLE_SHEETS_ID", "")
