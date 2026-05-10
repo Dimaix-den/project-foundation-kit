@@ -8,7 +8,7 @@ import logging
 import time
 import anthropic
 from agents.base import BaseAgent
-from storage.db import get_drafts, get_draft, get_plan, update_draft_status
+from storage.db import get_drafts, get_draft, get_plan, update_draft_status, get_history
 from storage.sheets import (
     write_content_plan, rewrite_content_plan, write_texts_to_plan,
     apply_changes, read_sheet_as_text, is_sheets_enabled,
@@ -191,16 +191,16 @@ class PublisherAgent(BaseAgent):
 
         texts = _parse_post_texts(raw_content)
 
-        # Если вместо текстов постов пришла инструкция — сообщаем об ошибке
-        if len(texts) == 1 and _looks_like_instruction(texts[0]):
-            return (
-                "⚠️ Нет текстов для записи — в контексте только инструкция, не контент.\n\n"
-                "Используй:\n`/create напишите тексты для всех постов и запишите в таблицу`\n\n"
-                "Копирайтер напишет тексты, затем я запишу их по строкам."
-            )
-
-        if not texts:
-            return "⚠️ Не удалось распознать тексты постов."
+        # Если нет реального контента или пришла только инструкция —
+        # берём тексты из последнего черновика в БД
+        no_real_content = not texts or (len(texts) == 1 and _looks_like_instruction(texts[0]))
+        if no_real_content:
+            texts = self._texts_from_latest_draft()
+            if not texts:
+                return (
+                    "⚠️ Нет текстов для записи.\n\n"
+                    "Используй:\n`/create напишите тексты для всех постов и запишите в таблицу`"
+                )
 
         result = write_texts_to_plan(texts)
         if isinstance(result, str) and "|" in result and result.startswith("http"):
@@ -209,6 +209,25 @@ class PublisherAgent(BaseAgent):
         if isinstance(result, str) and result.startswith("http"):
             return f"Готово 📊 [Открыть таблицу]({result})"
         return result
+
+    def _texts_from_latest_draft(self) -> list:
+        """Читает последний черновик из БД и парсит как тексты постов."""
+        try:
+            all_drafts = get_drafts("draft")
+            if not all_drafts:
+                return []
+            # Берём последний по ID
+            latest = max(all_drafts, key=lambda d: d["id"])
+            draft = get_draft(latest["id"])
+            if not draft or not draft.get("body"):
+                return []
+            body = draft["body"]
+            texts = _parse_post_texts(body)
+            logger.info(f"[Publisher] Взяли {len(texts)} текстов из черновика #{latest['id']}")
+            return texts
+        except Exception as e:
+            logger.error(f"[Publisher] Ошибка чтения черновика: {e}")
+            return []
 
     def get_status_report(self) -> str:
         drafts   = get_drafts("draft")
