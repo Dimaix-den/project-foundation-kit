@@ -1,7 +1,6 @@
 """
 Агент-менеджер публикаций.
-Умеет читать Google Sheets и вносить любые правки:
-обновлять ячейки, добавлять строки/столбцы, удалять записи.
+Умеет читать Google Sheets и вносить любые правки через LLM.
 """
 import re
 import json
@@ -18,34 +17,33 @@ from config import ANTHROPIC_API_KEY, MODEL
 
 logger = logging.getLogger(__name__)
 
-# Системный промпт для Claude-редактора таблицы
 SHEET_EDITOR_SYSTEM = """Ты — редактор Google Sheets для контент-команды Sanda.
 
-Тебе дадут:
-1. Текущее содержимое таблицы (построчно)
-2. Запрос пользователя на изменение
+Тебе дадут: (1) текущее содержимое таблицы, (2) запрос пользователя.
 
-Ответь ТОЛЬКО валидным JSON-массивом изменений (без markdown, без пояснений):
+Ответь ТОЛЬКО валидным JSON-массивом изменений (без markdown):
 
 [
-  {"action": "update_by_topic", "topic": "Тема поста", "field": "Описание", "value": "новое значение"},
+  {"action": "update_by_topic", "topic": "Тема поста", "field": "Описание", "value": "новый текст"},
   {"action": "update_by_topic", "topic": "Тема поста", "field": "Дата", "value": "2026-05-15"},
-  {"action": "update_by_topic", "topic": "Тема поста", "field": "Статус", "value": "✅ Готово"},
-  {"action": "update_by_topic", "topic": "Тема поста", "field": "Текст к посту", "value": "полный текст"},
+  {"action": "update_by_topic", "topic": "Тема", "field": "Статус", "value": "✅ Готово"},
+  {"action": "update_by_topic", "topic": "Тема", "field": "Текст к посту", "value": "полный текст"},
   {"action": "update", "row": 3, "field": "Платформа", "value": "instagram"},
   {"action": "add", "topic": "Новая тема", "description": "Описание", "platform": "telegram", "scheduled": "2026-05-20"},
   {"action": "delete_by_topic", "topic": "Тема для удаления"},
   {"action": "add_column", "name": "Название новой колонки"}
 ]
 
-Доступные поля для update: "Тема", "Описание", "Платформа", "Дата", "Статус", "Текст к посту"
-Доступные статусы: "📝 Черновик", "👀 На согласовании", "✅ Готово", "🚀 Опубликовано"
+Поля: "Тема", "Описание", "Платформа", "Дата", "Статус", "Текст к посту"
+Статусы: "📝 Черновик", "👀 На согласовании", "✅ Готово", "🚀 Опубликовано"
+Если ничего менять не нужно — верни [].
+scheduled формат: YYYY-MM-DD"""
 
-Правила:
-- Возвращай ТОЛЬКО JSON-массив, без пояснений
-- Если ничего менять не нужно — верни []
-- update_by_topic ищет строку по частичному совпадению темы
-- scheduled формат: YYYY-MM-DD"""
+# Маркеры, по которым определяем что контент — инструкция, а не реальные тексты постов
+_INSTRUCTION_MARKERS = [
+    "запиши тексты", "каждый пост", "отдельн строк", "используй данные",
+    "google sheets", "колонку", "контент-план", "каждая строка",
+]
 
 
 def _parse_post_texts(content: str) -> list:
@@ -54,15 +52,39 @@ def _parse_post_texts(content: str) -> list:
     texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 80]
     if len(texts) > 1:
         return texts
+
     parts = re.split(r'-{2,}\s*ПОСТ\s*\d+[^-]*-{2,}', content, flags=re.IGNORECASE)
     texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 80]
     if len(texts) > 1:
         return texts
+
     parts = re.split(r'\n{3,}', content)
     texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 100]
     if len(texts) > 1:
         return texts
+
     return [content.strip()] if content.strip() else []
+
+
+def _looks_like_instruction(text: str) -> bool:
+    """Проверяет, похоже ли содержимое на инструкцию, а не на реальный текст поста."""
+    low = text.lower()
+    return any(m in low for m in _INSTRUCTION_MARKERS)
+
+
+def _extract_post_context(user_message: str) -> str:
+    """Извлекает тексты постов из сообщения куратора."""
+    # Ищем блок [Тексты постов]: в контексте
+    if "[Тексты постов]:" in user_message:
+        raw = user_message.split("[Тексты постов]:", 1)[1].strip()
+        # Обрезаем если дальше идёт следующий блок [...]
+        if "\n\n[" in raw:
+            raw = raw.split("\n\n[", 1)[0].strip()
+        return raw
+    # Fallback: всё после КОНТЕКСТ:
+    if "КОНТЕКСТ:" in user_message:
+        return user_message.split("КОНТЕКСТ:", 1)[1].strip()
+    return user_message
 
 
 class PublisherAgent(BaseAgent):
@@ -77,7 +99,7 @@ class PublisherAgent(BaseAgent):
 {brand}
 
 ТВОИ ЗАДАЧИ:
-- Управлять Google Sheets с контент-планом (читать, редактировать, дополнять)
+- Управлять Google Sheets (читать, редактировать, дополнять)
 - Управлять статусами черновиков
 - Показывать план и статус материалов
 - Советовать время публикации
@@ -87,23 +109,19 @@ class PublisherAgent(BaseAgent):
 - Пн: мотивация, Пт: лёгкий контент"""
 
     def _edit_sheet_with_llm(self, user_request: str, extra_context: str = "") -> str:
-        """
-        Читает таблицу → передаёт Claude → получает список изменений → применяет.
-        """
+        """Читает таблицу → Claude составляет изменения → применяет."""
         if not is_sheets_enabled():
             return "⚠️ Google Sheets не подключён — напиши /sheets_setup"
-
         sheet_content = read_sheet_as_text()
         if not sheet_content or sheet_content == "Таблица пуста или недоступна.":
-            return "⚠️ Таблица пуста или недоступна. Сначала создай контент-план."
+            return "⚠️ Таблица пуста. Сначала создай контент-план."
 
         user_msg = f"Таблица:\n{sheet_content}\n\nЗапрос: {user_request}"
         if extra_context:
             user_msg += f"\n\nДополнительный контекст:\n{extra_context[:2000]}"
 
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        max_retries = 3
-        for attempt in range(max_retries):
+        for attempt in range(3):
             try:
                 resp = client.messages.create(
                     model=MODEL,
@@ -113,13 +131,12 @@ class PublisherAgent(BaseAgent):
                 )
                 break
             except anthropic.APIStatusError as e:
-                if e.status_code == 529 and attempt < max_retries - 1:
+                if e.status_code == 529 and attempt < 2:
                     time.sleep([10, 30, 60][attempt])
                     continue
                 raise
 
         raw = resp.content[0].text.strip()
-        # Убираем markdown если есть
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -129,7 +146,7 @@ class PublisherAgent(BaseAgent):
         try:
             changes = json.loads(raw.strip())
         except json.JSONDecodeError as e:
-            logger.error(f"[Publisher] Не удалось распарсить JSON изменений: {e}\nRaw: {raw[:300]}")
+            logger.error(f"[Publisher] JSON parse error: {e} | raw: {raw[:300]}")
             return f"⚠️ Не удалось составить список изменений: {e}"
 
         if not changes:
@@ -146,7 +163,7 @@ class PublisherAgent(BaseAgent):
         if not items:
             return "⚠️ В базе нет контент-плана. Попроси стратега создать его."
         if not is_sheets_enabled():
-            return "⚠️ Google Sheets не подключён — напиши /sheets_setup"
+            return "⚠️ Google Sheets не подключён"
         url = write_content_plan(items)
         if url.startswith("http"):
             return f"Контент-план записан 📊 [Открыть таблицу]({url})"
@@ -168,11 +185,23 @@ class PublisherAgent(BaseAgent):
             return f"⚠️ Ошибка: {e}"
 
     def _write_texts(self, raw_content: str) -> str:
+        """Парсит тексты постов и записывает каждый в отдельную строку."""
         if not is_sheets_enabled():
             return "⚠️ Google Sheets не подключён"
+
         texts = _parse_post_texts(raw_content)
+
+        # Если вместо текстов постов пришла инструкция — сообщаем об ошибке
+        if len(texts) == 1 and _looks_like_instruction(texts[0]):
+            return (
+                "⚠️ Нет текстов для записи — в контексте только инструкция, не контент.\n\n"
+                "Используй:\n`/create напишите тексты для всех постов и запишите в таблицу`\n\n"
+                "Копирайтер напишет тексты, затем я запишу их по строкам."
+            )
+
         if not texts:
             return "⚠️ Не удалось распознать тексты постов."
+
         result = write_texts_to_plan(texts)
         if isinstance(result, str) and "|" in result and result.startswith("http"):
             url, count = result.split("|", 1)
@@ -214,9 +243,13 @@ class PublisherAgent(BaseAgent):
         if any(t in msg_lower for t in ["статус", "что в работе", "покажи план", "что готово", "дашборд"]):
             return self.get_status_report()
 
-        # Запись текстов в колонку (от куратора/копирайтера)
-        if any(t in msg_lower for t in ["запиши тексты", "сохрани тексты", "текст к посту", "обнови тексты", "тексты в таблиц"]):
-            raw = user_message.split("КОНТЕКСТ:", 1)[1].strip() if "КОНТЕКСТ:" in user_message else user_message
+        # Запись текстов в колонку (куратор передаёт результат копирайтера)
+        text_write_triggers = [
+            "запиши тексты", "сохрани тексты", "текст к посту",
+            "обнови тексты", "тексты в таблиц", "записаны по строкам",
+        ]
+        if any(t in msg_lower for t in text_write_triggers):
+            raw = _extract_post_context(user_message)
             return self._write_texts(raw)
 
         # Запись нового плана с JSON
@@ -231,14 +264,16 @@ class PublisherAgent(BaseAgent):
         sheet_edit_triggers = [
             "таблиц", "столбец", "строк", "ячейк",
             "измени", "обнови", "добавь", "удали", "скоррект",
-            "перенес", "замен", "статус", "дату", "описани",
+            "перенес", "замен", "дату", "описани",
             "google sheets", "sheets",
         ]
         if any(t in msg_lower for t in sheet_edit_triggers) and is_sheets_enabled():
             extra_ctx = ""
+            instruction = user_message
             if "КОНТЕКСТ:" in user_message:
-                extra_ctx = user_message.split("КОНТЕКСТ:", 1)[1].strip()
-                user_message = user_message.split("КОНТЕКСТ:", 1)[0].strip()
-            return self._edit_sheet_with_llm(user_message, extra_ctx)
+                parts = user_message.split("КОНТЕКСТ:", 1)
+                instruction = parts[0].strip()
+                extra_ctx = parts[1].strip()
+            return self._edit_sheet_with_llm(instruction, extra_ctx)
 
         return super().run(user_message, history)
