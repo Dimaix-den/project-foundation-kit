@@ -17,6 +17,7 @@ from agents.copywriter import CopywriterAgent
 from agents.designer import DesignerAgent
 from agents.publisher import PublisherAgent
 from storage.db import save_draft, get_plan
+from storage.sheets import write_texts_to_plan, is_sheets_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,40 @@ class CuratorAgent:
                 visual_prompt=designer_result or "",
             )
             logger.info(f"[Curator] Черновик #{draft_id} сохранён")
+
+            # Автоматически пишем тексты в Sheets если задача была о написании постов
+            _WRITE_TO_SHEETS_KEYWORDS = [
+                "таблиц", "sheets", "запиши", "сохрани", "текст к посту",
+                "по строкам", "в строку", "столбец",
+            ]
+            task_wants_sheets = any(kw in task.lower() for kw in _WRITE_TO_SHEETS_KEYWORDS)
+            # Или если паблишер был в плане
+            publisher_in_plan = any(s.get("agent") == "publisher" for s in plan.get("steps", []))
+
+            if (task_wants_sheets or publisher_in_plan) and is_sheets_enabled():
+                try:
+                    import re as _re
+                    # Парсим тексты по разделителям ===ПОСТ N===
+                    parts = _re.split(r'={2,}\s*ПОСТ\s*\d+[^=]*={2,}', copywriter_result, flags=_re.IGNORECASE)
+                    texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 80]
+                    # Fallback: по тройным переносам
+                    if len(texts) <= 1:
+                        parts = _re.split(r'\n{3,}', copywriter_result)
+                        texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 100]
+                    if len(texts) > 1:
+                        sheets_result = write_texts_to_plan(texts)
+                        if isinstance(sheets_result, str) and "|" in sheets_result:
+                            url, count = sheets_result.split("|", 1)
+                            logger.info(f"[Curator] Тексты записаны в Sheets: {count} постов")
+                            # Добавляем результат в steps_results чтобы пользователь видел
+                            steps_results.append({
+                                "step": len(steps_results) + 1,
+                                "agent": "publisher",
+                                "label": "Тексты в таблице",
+                                "result": f"Готово 📊 Записано *{count} текстов* — [Открыть таблицу]({url})",
+                            })
+                except Exception as e:
+                    logger.warning(f"[Curator] Не удалось автосохранить в Sheets: {e}")
 
         return {
             "plan": plan,
