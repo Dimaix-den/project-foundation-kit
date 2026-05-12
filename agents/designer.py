@@ -1,15 +1,15 @@
 """
-Агент-дизайнер: генерирует изображения через Ideogram API,
-загружает на Google Drive, возвращает ссылку.
+Агент-дизайнер: генерирует изображения через Ideogram API или Pollinations,
+отправляет напрямую в Telegram (без Google Drive).
 """
 import os
 import re
 import time
 import logging
+import tempfile
 import requests
 from agents.base import BaseAgent
 from storage.db import save_draft
-from storage.drive import upload_image, is_drive_enabled
 
 logger = logging.getLogger(__name__)
 IDEOGRAM_API_URL = "https://api.ideogram.ai/generate"
@@ -78,7 +78,6 @@ CONCEPT: [2-3 предложения на русском — что изобра
     def _generate_via_pollinations(self, prompt: str) -> tuple:
         """Fallback: Pollinations.ai — только английский промпт."""
         try:
-            # Убеждаемся что промпт на английском (если нет — используем дефолтный)
             has_cyrillic = bool(re.search(r'[а-яА-Я]', prompt))
             if has_cyrillic:
                 prompt = "Young person managing finances on smartphone, dark moody background, mint green light accent, cinematic lifestyle"
@@ -98,19 +97,19 @@ CONCEPT: [2-3 предложения на русском — что изобра
         # Получаем от Claude промпт и концепцию
         raw = super().run(user_message, history)
 
-        # Извлекаем IMAGE_PROMPT (поддерживаем разные форматы)
+        # Извлекаем IMAGE_PROMPT
         prompt_match = re.search(r"\*{0,2}IMAGE_PROMPT\*{0,2}:\s*(.+?)(?:\n|$)", raw, re.IGNORECASE)
         concept_match = re.search(r"\*{0,2}CONCEPT\*{0,2}:\s*(.+?)(?:\n\n|\Z)", raw, re.IGNORECASE | re.DOTALL)
 
         image_prompt = prompt_match.group(1).strip() if prompt_match else ""
         concept = concept_match.group(1).strip() if concept_match else ""
 
-        # Если Claude не дал English промпт — используем дефолтный
+        # Если нет English промпта — дефолтный
         if not image_prompt or re.search(r'[а-яА-Я]', image_prompt):
-            logger.warning(f"[Designer] IMAGE_PROMPT не найден или кириллица, использую дефолтный. raw={raw[:200]}")
+            logger.warning(f"[Designer] IMAGE_PROMPT не найден или кириллица, использую дефолтный")
             image_prompt = "Young Kazakh person managing personal finances on smartphone, cozy home setting, dark cinematic lighting, mint green accent, lifestyle photography"
 
-        # Генерируем
+        # Генерируем изображение
         use_ideogram = bool(os.getenv("IDEOGRAM_API_KEY"))
         if use_ideogram:
             image_bytes, err = self._generate_via_ideogram(image_prompt)
@@ -121,29 +120,25 @@ CONCEPT: [2-3 предложения на русском — что изобра
             image_bytes, err = self._generate_via_pollinations(image_prompt)
 
         if not image_bytes:
-            # Возвращаем хотя бы концепцию и статичную ссылку
+            # Fallback: возвращаем прямую ссылку на Pollinations
             encoded = requests.utils.quote(image_prompt + ", dark background, mint green accent, minimalist fintech, no text")
             link = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true"
-            return (
-                f"Готово 🎨\n\n{concept}\n\n"
-                f"[Посмотреть изображение]({link})\n\n"
-                f"_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
-            )
+            return f"Готово 🎨\n\n{concept}\n\n[Посмотреть изображение]({link})"
 
-        # Загружаем на Drive
-        if is_drive_enabled():
-            filename = f"sanda_{int(time.time())}.png"
-            link = upload_image(image_bytes, filename)
-            if link.startswith("http"):
-                result = f"Готово 🎨\n\n{concept}\n\n[Открыть изображение]({link})"
-                save_draft(body=result, title=f"Визуал: {user_message[:50]}", agent="designer", visual_prompt=link)
-                return result
-            return f"Изображение создано, но Drive недоступен: {link}\n\n{concept}"
-        else:
+        # Сохраняем во временный файл — handler.py отправит как фото в Telegram
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp")
+            tmp.write(image_bytes)
+            tmp.close()
+            save_draft(
+                body=concept,
+                title=f"Визуал: {user_message[:50]}",
+                agent="designer",
+                visual_prompt=image_prompt,
+            )
+            return f"Готово 🎨\n\n{concept}\n[IMAGE_FILE:{tmp.name}]"
+        except Exception as e:
+            logger.warning(f"[Designer] Не удалось сохранить файл: {e}")
             encoded = requests.utils.quote(image_prompt + ", dark background, mint green accent, minimalist fintech, no text")
             link = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1080&nologo=true"
-            return (
-                f"Готово 🎨\n\n{concept}\n\n"
-                f"[Посмотреть изображение]({link})\n\n"
-                f"_Чтобы сохранять на Google Drive — добавь GOOGLE\\_DRIVE\\_FOLDER\\_ID в Railway_"
-            )
+            return f"Готово 🎨\n\n{concept}\n\n[Посмотреть изображение]({link})"

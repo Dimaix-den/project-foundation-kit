@@ -48,23 +48,14 @@ def is_allowed(user_id: int) -> bool:
 
 
 async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Общий хелпер: запускает куратора, показывает прогресс и отправляет результаты."""
+    """Общий хелпер: запускает куратора и отправляет результаты в чат."""
     chat_id   = update.effective_chat.id
     thread_id = getattr(update.message, "message_thread_id", None)
     loop      = asyncio.get_event_loop()
 
-    # Прогресс — отправляем в чат
+    # Прогресс только в логах, не в чат
     def sync_progress(step, text):
         logger.info(f"[Curator progress] {step}: {text}")
-        asyncio.run_coroutine_threadsafe(
-            ctx.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode="Markdown",
-                message_thread_id=thread_id,
-            ),
-            loop,
-        )
 
     await ctx.bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -77,17 +68,61 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"Что-то пошло не так: {e}")
         return
 
-    # Отправляем только финальные результаты — без технических заголовков шагов
+    # Отправляем результаты шагов
     steps = results.get("steps_results", [])
-    # Пропускаем промежуточные шаги паблишера если есть финальный результат копирайтера
     for step in steps:
         result = step.get("result", "").strip()
         agent  = step.get("agent", "")
 
-        # Пропускаем пустые и сугубо технические ответы паблишера
         if not result:
             continue
 
+        # Стратег: если план уже в Sheets — показываем только подтверждение, не дамп плана
+        if agent == "strategist" and is_sheets_enabled():
+            sheets_line = next(
+                (line for line in result.splitlines() if "Таблица" in line or "таблица" in line),
+                None,
+            )
+            if sheets_line:
+                # Показываем первую строку (итог) + строку про таблицу
+                first_line = result.splitlines()[0].strip()
+                short = f"{first_line}\n{sheets_line}" if first_line != sheets_line else sheets_line
+                try:
+                    await ctx.bot.send_message(
+                        chat_id=chat_id, text=short,
+                        parse_mode=ParseMode.MARKDOWN,
+                        message_thread_id=thread_id,
+                    )
+                except Exception:
+                    await ctx.bot.send_message(chat_id=chat_id, text=short, message_thread_id=thread_id)
+                continue
+
+        # Дизайнер: проверяем маркер [IMAGE_FILE:path]
+        img_match = re.search(r'\[IMAGE_FILE:(.+?)\]', result)
+        if img_match:
+            img_path = img_match.group(1).strip()
+            caption = result.replace(img_match.group(0), "").strip()
+            try:
+                with open(img_path, "rb") as img_f:
+                    await ctx.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=img_f,
+                        caption=caption[:1024] if caption else None,
+                        parse_mode=ParseMode.MARKDOWN,
+                        message_thread_id=thread_id,
+                    )
+            except Exception as e:
+                logger.warning(f"Не удалось отправить фото: {e}")
+                if caption:
+                    await ctx.bot.send_message(chat_id=chat_id, text=caption, message_thread_id=thread_id)
+            finally:
+                try:
+                    os.unlink(img_path)
+                except Exception:
+                    pass
+            continue
+
+        # Обычный текстовый результат
         chunks = [result[i:i+3800] for i in range(0, len(result), 3800)]
         for chunk in chunks:
             try:
