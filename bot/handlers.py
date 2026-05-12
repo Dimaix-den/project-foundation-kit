@@ -77,6 +77,11 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
         if not result:
             continue
 
+        # Шаги помеченные hidden (напр. copywriter в silent mode) — пропускаем
+        if step.get("hidden"):
+            logger.info(f"[Handler] Шаг '{agent}' скрыт (silent mode)")
+            continue
+
         # Стратег: если план уже в Sheets — показываем только подтверждение, не дамп плана
         if agent == "strategist" and is_sheets_enabled():
             sheets_line = next(
@@ -122,8 +127,9 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
                     pass
             continue
 
-        # Обычный текстовый результат
-        chunks = [result[i:i+3800] for i in range(0, len(result), 3800)]
+        # Обычный текстовый результат — режем на куски по 3800 символов
+        MAX = 3800
+        chunks = [result[i:i+MAX] for i in range(0, len(result), MAX)]
         for chunk in chunks:
             try:
                 await ctx.bot.send_message(
@@ -132,10 +138,12 @@ async def _run_curator(task: str, update: Update, ctx: ContextTypes.DEFAULT_TYPE
                     message_thread_id=thread_id,
                 )
             except Exception:
-                await ctx.bot.send_message(
-                    chat_id=chat_id, text=chunk,
-                    message_thread_id=thread_id,
-                )
+                # Markdown сломан — шлём plain text, тоже чанкуем
+                for plain_chunk in [chunk[i:i+MAX] for i in range(0, len(chunk), MAX)]:
+                    await ctx.bot.send_message(
+                        chat_id=chat_id, text=plain_chunk,
+                        message_thread_id=thread_id,
+                    )
 
     # Кнопки если есть черновик
     draft_id = results.get("draft_id")

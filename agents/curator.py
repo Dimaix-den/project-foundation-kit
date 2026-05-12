@@ -199,10 +199,23 @@ class CuratorAgent:
                 raw = raw[4:]
         return json.loads(raw)
 
+    # Ключевые слова "не пиши в чат, сохрани в таблицу"
+    _SILENT_KEYWORDS = [
+        "не пиши в чат", "не надо в чат", "только в таблицу",
+        "сохрани в таблице", "сохрани в таблицу", "запиши в таблицу",
+        "не выводи в чат", "сразу сохрани", "без вывода",
+    ]
+
     def run(self, task: str, progress_cb=None) -> dict:
         logger.info(f"[Curator] Задача: {task[:80]}")
         if progress_cb:
             progress_cb("plan", "🧠 *Куратор* анализирует задачу и составляет план...")
+
+        # Режим "только в таблицу" — не дублировать тексты в чат
+        task_lower = task.lower()
+        silent_mode = any(kw in task_lower for kw in self._SILENT_KEYWORDS)
+        if silent_mode:
+            logger.info("[Curator] Silent mode: copywriter output won't be sent to chat")
 
         # Подгружаем план из БД если задача о нём
         enriched_task = self._enrich_task_with_plan(task)
@@ -271,11 +284,13 @@ class CuratorAgent:
             else:
                 result = agent.run(full_instruction)
 
+            hide_in_chat = silent_mode and agent_name == "copywriter"
             steps_results.append({
                 "step": i + 1,
                 "agent": agent_name,
                 "label": output_label,
                 "result": result,
+                "hidden": hide_in_chat,
             })
 
             # Паблишер получает полный текст (нужен для записи всех постов в Sheets)
@@ -321,6 +336,17 @@ class CuratorAgent:
                         parts = _re.split(r'\n{3,}', copywriter_result)
                         texts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 100]
                     if len(texts) > 1:
+                        # Убеждаемся что план уже в Sheets — если нет, пишем сначала
+                        from storage.sheets import read_sheet
+                        existing_rows = read_sheet()
+                        if not existing_rows:
+                            # План есть в БД, но не в Sheets — пишем его
+                            plan_items = get_plan("planned")
+                            if plan_items:
+                                write_texts_to_plan.__module__  # ensure import
+                                from storage.sheets import write_content_plan as _wcp
+                                _wcp(plan_items)
+                                logger.info("[Curator] Записал план в Sheets перед текстами")
                         sheets_result = write_texts_to_plan(texts)
                         if isinstance(sheets_result, str) and "|" in sheets_result:
                             url, count = sheets_result.split("|", 1)
