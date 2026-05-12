@@ -656,3 +656,58 @@ async def _publish_draft_callback(query, ctx: ContextTypes.DEFAULT_TYPE, draft_i
         err = str(e)
         hint = " (проверь ID канала и права бота)" if "Chat not found" in err else ""
         await query.edit_message_text(f"❌ Ошибка: {e}{hint}")
+
+
+async def cmd_test_channel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Диагностика подключения к каналу публикации."""
+    lines = ["🔍 *Диагностика канала*\n"]
+
+    channel = config.PUBLISH_CHANNEL
+    if not channel:
+        await update.message.reply_text("❌ PUBLISH\\_CHANNEL не задан в переменных окружения.")
+        return
+
+    lines.append(f"PUBLISH\\_CHANNEL: `{channel}`")
+
+    # Приводим к int если числовой ID
+    channel_id = channel
+    try:
+        channel_id = int(channel)
+        lines.append(f"Тип: числовой ID ({channel_id})")
+    except (ValueError, TypeError):
+        lines.append(f"Тип: username/строка")
+
+    # Пробуем получить инфо о чате
+    try:
+        chat = await ctx.bot.get_chat(chat_id=channel_id)
+        lines.append(f"✅ Чат найден!")
+        lines.append(f"Название: {chat.title}")
+        lines.append(f"Тип: {chat.type}")
+        lines.append(f"ID: `{chat.id}`")
+    except Exception as e:
+        lines.append(f"❌ get\\_chat: {e}")
+        lines.append("\n*Возможные причины:*")
+        lines.append("• Неверный ID — узнай точный через @userinfobot")
+        lines.append("• Бот не добавлен в канал")
+        lines.append("• Бот не является администратором канала")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Пробуем отправить тестовое сообщение
+    try:
+        sent = await ctx.bot.send_message(
+            chat_id=channel_id,
+            text="🔧 Тест подключения Sanda Marketing Bot — всё работает!",
+        )
+        lines.append(f"✅ Тестовое сообщение отправлено (ID: {sent.message_id})")
+        # Удаляем тестовое сообщение
+        try:
+            await ctx.bot.delete_message(chat_id=channel_id, message_id=sent.message_id)
+            lines.append("_(тестовое сообщение удалено)_")
+        except Exception:
+            pass
+    except Exception as e:
+        lines.append(f"❌ Отправка сообщения: {e}")
+        lines.append("\nПроверь что бот имеет право *публиковать сообщения* в канале.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
