@@ -95,7 +95,7 @@ class ContentPipeline:
             f"Создай промпт для генерации изображения к посту на тему: «{topic}»\n\n"
             f"Текст поста:\n{copywriter_result[:300]}...\n\n"
             f"Дай промпт для DALL-E и Midjourney. "
-            f"Стиль: профессиональный B2B, чистый минимализм."
+            f"Стиль: современный, чистый минимализм, B2C финтех."
         )
         designer_result = self.designer.run(designer_prompt)
         results["designer"] = designer_result
