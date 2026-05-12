@@ -496,8 +496,15 @@ async def _publish_draft(update: Update, ctx: ContextTypes.DEFAULT_TYPE, draft_i
         return
 
     try:
+        # Telegram принимает ID канала как int или строку "-100XXXXXXXXX"
+        channel = config.PUBLISH_CHANNEL
+        try:
+            channel = int(channel)
+        except (ValueError, TypeError):
+            pass  # оставляем как строку (@username)
+
         sent = await ctx.bot.send_message(
-            chat_id=config.PUBLISH_CHANNEL,
+            chat_id=channel,
             text=draft["body"],
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -508,7 +515,20 @@ async def _publish_draft(update: Update, ctx: ContextTypes.DEFAULT_TYPE, draft_i
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка публикации: {e}")
+        err = str(e)
+        hint = ""
+        if "Chat not found" in err:
+            hint = (
+                "\n\n💡 *Возможные причины:*"
+                "\n• Неверный ID канала — проверь через @userinfobot"
+                "\n• Бот не добавлен в канал как администратор"
+                "\n• Бот не имеет права публиковать сообщения"
+                f"\n\nТекущий PUBLISH\_CHANNEL: `{config.PUBLISH_CHANNEL}`"
+            )
+        await update.message.reply_text(
+            f"❌ Ошибка публикации: {e}{hint}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def cmd_sheets_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -624,8 +644,14 @@ async def _publish_draft_callback(query, ctx: ContextTypes.DEFAULT_TYPE, draft_i
         return
 
     try:
+        channel = config.PUBLISH_CHANNEL
+        try:
+            channel = int(channel)
+        except (ValueError, TypeError):
+            pass
+
         sent = await ctx.bot.send_message(
-            chat_id=config.PUBLISH_CHANNEL,
+            chat_id=channel,
             text=draft["body"],
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -635,4 +661,6 @@ async def _publish_draft_callback(query, ctx: ContextTypes.DEFAULT_TYPE, draft_i
             f"✅ Опубликовано! Черновик #{draft_id} → {config.PUBLISH_CHANNEL}"
         )
     except Exception as e:
-        await query.edit_message_text(f"❌ Ошибка: {e}")
+        err = str(e)
+        hint = " (проверь ID канала и права бота)" if "Chat not found" in err else ""
+        await query.edit_message_text(f"❌ Ошибка: {e}{hint}")
