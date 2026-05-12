@@ -365,42 +365,34 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         message_thread_id=topic_id or None,
     )
 
-    # ─── История контекста ────────────────────────────────────────
-    history = get_history(user_id, limit=8)
+    # ─── Явный вызов конкретного агента через @имя ───────────────
+    if force_agent:
+        history = get_history(user_id, limit=8)
+        agent_name, response = orchestrator.route(
+            message=message,
+            history=history,
+            topic_id=topic_id,
+            force_agent=force_agent,
+        )
+        add_to_history(user_id, "user", message, agent_name)
+        add_to_history(user_id, "assistant", response[:1000], agent_name)
+        agent_emojis = {
+            "analyst": "🔍", "strategist": "📋",
+            "copywriter": "✍️", "designer": "🎨", "publisher": "📅",
+        }
+        emoji = agent_emojis.get(agent_name, "🤖")
+        max_len = 4000
+        chunks = [response[i:i+max_len] for i in range(0, len(response), max_len)]
+        for i, chunk in enumerate(chunks):
+            prefix = f"{emoji} *{agent_name.capitalize()}:*\n\n" if i == 0 else ""
+            try:
+                await update.message.reply_text(prefix + chunk, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(prefix + chunk)
+        return
 
-    # ─── Роутинг к агенту ────────────────────────────────────────
-    agent_name, response = orchestrator.route(
-        message=message,
-        history=history,
-        topic_id=topic_id,
-        force_agent=force_agent,
-    )
-
-    # ─── Сохраняем в историю ─────────────────────────────────────
-    add_to_history(user_id, "user", message, agent_name)
-    add_to_history(user_id, "assistant", response[:1000], agent_name)
-
-    # ─── Отправляем ответ ─────────────────────────────────────────
-    agent_emojis = {
-        "analyst": "🔍", "strategist": "📋",
-        "copywriter": "✍️", "designer": "🎨", "publisher": "📅",
-    }
-    emoji = agent_emojis.get(agent_name, "🤖")
-
-    # Разбиваем длинные ответы на части (лимит Telegram — 4096 символов)
-    max_len = 4000
-    chunks = [response[i:i+max_len] for i in range(0, len(response), max_len)]
-
-    for i, chunk in enumerate(chunks):
-        prefix = f"{emoji} *{agent_name.capitalize()}:*\n\n" if i == 0 else ""
-        try:
-            await update.message.reply_text(
-                prefix + chunk,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception:
-            # Если Markdown сломан — отправляем как plain text
-            await update.message.reply_text(prefix + chunk)
+    # ─── Всё остальное — куратор (мульти-агентный пайплайн) ──────
+    await _run_curator(message, update, ctx)
 
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
